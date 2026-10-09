@@ -15,6 +15,7 @@ export const createProductSchema = z.object({
 
   price: z.number().positive("Price must be positive"),
   originalPrice: z.number().positive().optional(),
+  investPrice: z.number().nonnegative().optional(), // admin-only: purchase/cost price
 
   image: z.string().url("Image must be a valid URL"),
   additionalImages: z.array(z.string().url()).optional(),

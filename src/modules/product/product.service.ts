@@ -37,17 +37,25 @@ function formatProduct(product: any, ratingsMap?: Map<string, any>) {
   const stat = ratingsMap?.get(id);
 
   const isOfferExpired = obj.offerEndDate && new Date(obj.offerEndDate).getTime() <= Date.now();
-  const effectivePrice = isOfferExpired && obj.originalPrice ? obj.originalPrice : obj.price;
-  const effectiveOriginalPrice = isOfferExpired ? obj.originalPrice : obj.originalPrice;
 
-  // Calculate discount% from prices if not expired
+  // When offer expires: selling price reverts to originalPrice, no discount shown
+  const effectivePrice = isOfferExpired && obj.originalPrice ? obj.originalPrice : obj.price;
+  const effectiveOriginalPrice = isOfferExpired ? undefined : obj.originalPrice;
+
+  // Calculate discount% only when offer is still active
   const discountPercentage =
-    !isOfferExpired && effectiveOriginalPrice && effectiveOriginalPrice > effectivePrice
-      ? Math.round(((effectiveOriginalPrice - effectivePrice) / effectiveOriginalPrice) * 100)
+    !isOfferExpired && obj.originalPrice && obj.originalPrice > obj.price
+      ? Math.round(((obj.originalPrice - obj.price) / obj.originalPrice) * 100)
       : undefined;
 
   // Resolve category label from populated ref or specifications fallback
   const categoryName = obj.categoryId?.name || obj.specifications?.Category || "";
+
+  // Profit margin % — only meaningful when investPrice is set
+  const profitMargin =
+    obj.investPrice != null && effectivePrice != null
+      ? Math.round(((effectivePrice - obj.investPrice) / effectivePrice) * 100 * 10) / 10
+      : undefined;
 
   return {
     ...obj,
@@ -56,6 +64,9 @@ function formatProduct(product: any, ratingsMap?: Map<string, any>) {
     originalPrice: effectiveOriginalPrice,
     categories: categoryName ? [categoryName] : [],
     discountPercentage,
+    isOfferExpired: Boolean(isOfferExpired),
+    investPrice: obj.investPrice,
+    profitMargin,
     rating: stat ? Math.round(stat.avgRating * 10) / 10 : (obj.rating ?? 0),
     reviewCount: stat ? stat.count : (obj.reviewCount ?? 0),
   };

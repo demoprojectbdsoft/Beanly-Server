@@ -11,6 +11,7 @@ const productSchema = new Schema(
 
     price: { type: Number, required: true },
     originalPrice: { type: Number },
+    investPrice: { type: Number },   // admin-only: purchase / cost price for profit tracking
     // discountPercentage intentionally NOT stored — computed on read
 
     image: { type: String, required: true },           // main image
@@ -29,6 +30,7 @@ const productSchema = new Schema(
     specifications: { type: Map, of: String },
     isFeatured: { type: Boolean, default: false },
     offerEndDate: { type: Date },
+    offerExpired: { type: Boolean, default: false }, // set true by cron once offer lapses
   },
   { timestamps: true }
 );

@@ -1,6 +1,7 @@
 import { User } from "./user.model";
 import { ApiError } from "../../utils/apiError";
 import { UpdateUserInput, GetUsersQuery } from "./user.validator";
+import { getMembershipTier } from "../order/order.service";
 
 export async function getUsers(query: GetUsersQuery) {
   const { role, status, search, page, limit } = query;
@@ -33,6 +34,9 @@ export async function getUserById(id: string) {
 }
 
 export async function updateUser(id: string, data: UpdateUserInput) {
+  if (data.points !== undefined && data.member === undefined) {
+    data.member = getMembershipTier(data.points);
+  }
   const user = await User.findByIdAndUpdate(id, data, { new: true });
   if (!user) throw new ApiError(404, "User not found");
   return user;

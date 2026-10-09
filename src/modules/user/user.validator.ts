@@ -6,7 +6,7 @@ export const updateUserSchema = z.object({
   role: z.enum(["admin", "customer"]).optional(),
   plan: z.string().optional(),
   status: z.enum(["active", "suspended"]).optional(),
-  member: z.enum(["silver", "gold", "platinum"]).optional(),
+  member: z.enum(["silver", "gold", "platinum", "diamond"]).optional(),
   points: z.number().int().nonnegative().optional(),
   phone: z.string().optional(),
   bio: z.string().optional(),
@@ -16,7 +16,7 @@ export const updateUserSchema = z.object({
 export const getUsersQuerySchema = z.object({
   role: z.string().optional(),
   status: z.string().optional(),
-  member: z.enum(["silver", "gold", "platinum"]).optional(),
+  member: z.enum(["silver", "gold", "platinum", "diamond"]).optional(),
   search: z.string().optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(1000).default(20),

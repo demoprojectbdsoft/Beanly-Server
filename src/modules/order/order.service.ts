@@ -11,6 +11,20 @@ const STANDARD_SHIPPING_FEE = 15.0;
 const FREE_SHIPPING_THRESHOLD = 50.0;
 const POINTS_PER_DOLLAR = 1;
 
+/**
+ * Calculates customer membership tier according to loyalty points:
+ * - Silver:   0 – 999
+ * - Gold:     1,000 – 3,999
+ * - Platinum: 4,000 – 9,999
+ * - Diamond:  10,000+
+ */
+export function getMembershipTier(points: number): "silver" | "gold" | "platinum" | "diamond" {
+  if (points >= 10000) return "diamond";
+  if (points >= 4000) return "platinum";
+  if (points >= 1000) return "gold";
+  return "silver";
+}
+
 export async function createOrder(data: CreateOrderInput) {
   if (data.paymentMethod !== "cod" && !data.transactionId) {
     throw new ApiError(400, "Transaction ID required for wallet payments");
@@ -69,7 +83,9 @@ export async function createOrder(data: CreateOrderInput) {
 
   await Cart.deleteMany({ userId: data.userId });
 
-  await User.findByIdAndUpdate(data.userId, { $inc: { points: pointsEarned } });
+  // pointsEarned is calculated and locked onto the order now, but NOT credited
+  // to the user yet — that only happens once an admin marks the order "delivered"
+  // (see updateOrderStatus below), so a cancelled/undelivered order never pays out.
 
   return order;
 }
@@ -137,10 +153,32 @@ export async function getOrderById(id: string) {
 }
 
 export async function updateOrderStatus(id: string, data: UpdateOrderStatusInput) {
+  const existingOrder = await Order.findById(id);
+  if (!existingOrder) throw new ApiError(404, "Order not found");
+
   const order = await Order.findByIdAndUpdate(id, data, { new: true });
   if (!order) throw new ApiError(404, "Order not found");
 
   await logOrderStatus(id, data.orderStatus);
+
+  // Credit loyalty points exactly once — only on the transition INTO "delivered",
+  // never on a repeat update and never for a cancelled/undelivered order.
+  if (data.orderStatus === "delivered" && existingOrder.orderStatus !== "delivered") {
+    const updatedUser = await User.findByIdAndUpdate(
+      order.userId,
+      { $inc: { points: order.pointsEarned } },
+      { new: true }
+    );
+
+    if (updatedUser) {
+      const totalPoints =
+        typeof updatedUser.points === "number" && !isNaN(updatedUser.points) ? updatedUser.points : 0;
+      const newTier = getMembershipTier(totalPoints);
+      if (updatedUser.member !== newTier) {
+        await User.findByIdAndUpdate(order.userId, { $set: { member: newTier } });
+      }
+    }
+  }
 
   return order;
 }
