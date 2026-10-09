@@ -2,6 +2,7 @@ import { Order } from "./order.model";
 import { Product } from "../product/product.model";
 import { Cart } from "../cart/cart.model";
 import { User } from "../user/user.model";
+import { Transaction } from "../transaction/transaction.model";
 import { ApiError } from "../../utils/apiError";
 import { CreateOrderInput, UpdateOrderStatusInput, GetOrdersQuery } from "./order.validator";
 import { logOrderStatus } from "../order-status/order-status.service";
@@ -160,6 +161,14 @@ export async function updateOrderStatus(id: string, data: UpdateOrderStatusInput
   if (!order) throw new ApiError(404, "Order not found");
 
   await logOrderStatus(id, data.orderStatus);
+
+  // When order status is updated to "delivered", update associated transaction(s) status to "success"
+  if (data.orderStatus === "delivered") {
+    await Transaction.updateMany(
+      { orderId: id, status: { $ne: "success" } },
+      { $set: { status: "success" } }
+    );
+  }
 
   // Credit loyalty points exactly once — only on the transition INTO "delivered",
   // never on a repeat update and never for a cancelled/undelivered order.
