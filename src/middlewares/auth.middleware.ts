@@ -1,8 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { ApiError } from "../utils/apiError";
 import { ENV } from "../config/env";
-
-const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
+import { createRemoteJWKSet, jwtVerify } from "jose-cjs";
 
 const JWKS = createRemoteJWKSet(new URL(`${ENV.NEXT_PUBLIC_CLIENT_URL}/api/auth/jwks`));
 
