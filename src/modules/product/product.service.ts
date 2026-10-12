@@ -174,6 +174,22 @@ export async function getProducts(query: GetProductsQuery) {
   if (isFeatured !== undefined) conditions.push({ isFeatured });
   if (inStock !== undefined) conditions.push({ inStock });
 
+  // 5.1. Minimum rating filter
+  if (query.minRating !== undefined) {
+    conditions.push({ rating: { $gte: query.minRating } });
+  }
+
+  // 5.2. Has active offer filter (originalPrice > price AND offerEndDate is in the future or not set)
+  if (query.hasOffer) {
+    conditions.push({
+      $and: [
+        { originalPrice: { $exists: true, $ne: null } },
+        { $expr: { $gt: ["$originalPrice", "$price"] } },
+        { $or: [{ offerEndDate: { $exists: false } }, { offerEndDate: null }, { offerEndDate: { $gt: new Date() } }] },
+      ],
+    });
+  }
+
   const filter = conditions.length > 0 ? { $and: conditions } : {};
 
   // 6. Sorting

@@ -60,6 +60,12 @@ export const getProductsQuerySchema = z.object({
   sort: z.string().optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(1000).default(20),
+  minRating: z.coerce.number().min(0).max(5).optional(),
+  hasOffer: z
+    .preprocess(
+      (v) => (v === "true" || v === true ? true : v === "false" || v === false ? false : undefined),
+      z.boolean().optional()
+    ),
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>;
