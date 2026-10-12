@@ -34,8 +34,18 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       email: payload.email as string | undefined,
       role: payload.role as string | undefined,
     };
-    next();
-  } catch (err) {
+    return next();
+  } catch {
+    // If not a JWT, check Better-Auth session in DB
+    const db = (await import("mongoose")).default.connection.db;
+    const session = await db?.collection("session").findOne({ token });
+    if (session) {
+      const user = await db?.collection("user").findOne({ _id: session.userId });
+      if (user) {
+        req.user = { id: String(user._id), email: user.email, role: user.role };
+        return next();
+      }
+    }
     next(new ApiError(401, "Invalid or expired token"));
   }
 }
