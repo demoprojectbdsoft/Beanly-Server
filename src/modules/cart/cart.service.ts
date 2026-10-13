@@ -38,9 +38,22 @@ export async function addToCart(userId: string, productId: string, quantity: num
   const product = await Product.findById(productId);
   if (!product) throw new ApiError(404, "Product not found");
 
+  if (!product.inStock || (product.stockQuantity != null && product.stockQuantity <= 0)) {
+    throw new ApiError(400, `"${product.title}" is currently out of stock`);
+  }
+
   const existing = await Cart.findOne({ userId, productId });
+  const requestedTotal = existing ? existing.quantity + quantity : quantity;
+
+  if (product.stockQuantity != null && requestedTotal > product.stockQuantity) {
+    throw new ApiError(
+      400,
+      `Cannot add more items. Only ${product.stockQuantity} unit(s) available in stock`
+    );
+  }
+
   if (existing) {
-    existing.quantity += quantity;
+    existing.quantity = requestedTotal;
     await existing.save();
     return existing.populate("productId");
   }
@@ -50,6 +63,20 @@ export async function addToCart(userId: string, productId: string, quantity: num
 }
 
 export async function updateCartItem(userId: string, productId: string, quantity: number) {
+  const product = await Product.findById(productId);
+  if (!product) throw new ApiError(404, "Product not found");
+
+  if (!product.inStock || (product.stockQuantity != null && product.stockQuantity <= 0)) {
+    throw new ApiError(400, `"${product.title}" is currently out of stock`);
+  }
+
+  if (product.stockQuantity != null && quantity > product.stockQuantity) {
+    throw new ApiError(
+      400,
+      `Cannot exceed available stock of ${product.stockQuantity} unit(s) for "${product.title}"`
+    );
+  }
+
   const item = await Cart.findOneAndUpdate(
     { userId, productId },
     { quantity },
