@@ -27,3 +27,15 @@ export const updateOrderStatus = catchAsync(async (req, res) => {
   const order = await orderService.updateOrderStatus(req.params.id as string, req.body);
   apiResponse(res, 200, order, "Order status updated");
 });
+
+export const updateCustomerResponse = catchAsync(async (req, res) => {
+  const userId = req.user?.id;
+  const userRole = req.user?.role;
+  const order = await orderService.updateCustomerResponse(
+    req.params.id as string,
+    req.body,
+    userId,
+    userRole
+  );
+  apiResponse(res, 200, order, "Customer response updated successfully");
+});

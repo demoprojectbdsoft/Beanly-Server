@@ -36,6 +36,19 @@ const orderSchema = new Schema(
       enum: ["confirmed", "processing", "shipped", "delivered", "cancelled"],
       default: "processing",
     },
+    customerResponse: {
+      type: String,
+      enum: ["received", "not_received", "cancelled"],
+      default: null,
+    },
+    customerResponseNote: {
+      type: String,
+      default: "",
+    },
+    customerResponseAt: {
+      type: Date,
+      default: null,
+    },
     pointsEarned: { type: Number, default: 0 },
   },
   { timestamps: true }
