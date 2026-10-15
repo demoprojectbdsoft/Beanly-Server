@@ -19,6 +19,7 @@ const productSchema = new Schema(
 
     inStock: { type: Boolean, default: true },
     stockQuantity: { type: Number },
+    sellCount: { type: Number, default: 0 },
 
     rating: { type: Number },
     reviewCount: { type: Number },

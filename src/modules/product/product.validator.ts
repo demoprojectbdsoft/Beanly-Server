@@ -20,8 +20,9 @@ export const createProductSchema = z.object({
   image: z.string().url("Image must be a valid URL"),
   additionalImages: z.array(z.string().url()).optional(),
 
-  inStock: z.boolean().optional(),
+   inStock: z.boolean().optional(),
   stockQuantity: z.number().int().nonnegative().optional(),
+  sellCount: z.number().int().nonnegative().optional(),
 
   badges: z.array(z.string()).optional(),  // plain strings, matches current form
 

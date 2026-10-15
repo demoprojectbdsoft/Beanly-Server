@@ -171,15 +171,29 @@ export async function updateOrderStatus(id: string, data: UpdateOrderStatusInput
 
   await logOrderStatus(id, data.orderStatus);
 
-  // On cancel → mark transaction failed
+  // On cancel → mark transaction failed (+ rollback sellCount if previously delivered)
   if (data.orderStatus === "cancelled") {
     await Transaction.updateMany(
       { orderId: id, status: { $ne: "failed" } },
       { $set: { status: "failed" } }
     );
+
+    if (order.orderStatus === "delivered") {
+      for (const item of order.items || []) {
+        if (item.productId && item.quantity) {
+          const prodId =
+            typeof item.productId === "object" && item.productId !== null && "_id" in item.productId
+              ? (item.productId as any)._id
+              : item.productId;
+          await Product.findByIdAndUpdate(prodId, {
+            $inc: { sellCount: -item.quantity },
+          });
+        }
+      }
+    }
   }
 
-  // On delivered → mark transaction success + credit loyalty points (once)
+  // On delivered → mark transaction success + credit loyalty points (once) + increment product sellCount
   if (data.orderStatus === "delivered") {
     await Transaction.updateMany(
       { orderId: id, status: { $ne: "success" } },
@@ -187,6 +201,19 @@ export async function updateOrderStatus(id: string, data: UpdateOrderStatusInput
     );
 
     if (order.orderStatus !== "delivered") {
+      // Increment sellCount for each product according to quantity
+      for (const item of updated.items || []) {
+        if (item.productId && item.quantity) {
+          const prodId =
+            typeof item.productId === "object" && item.productId !== null && "_id" in item.productId
+              ? (item.productId as any)._id
+              : item.productId;
+          await Product.findByIdAndUpdate(prodId, {
+            $inc: { sellCount: item.quantity },
+          });
+        }
+      }
+
       const updatedUser = await User.findByIdAndUpdate(
         updated.userId,
         { $inc: { points: updated.pointsEarned } },
