@@ -1,5 +1,6 @@
 import { Cart } from "./cart.model";
 import { Product } from "../product/product.model";
+import { User } from "../user/user.model";
 import { ApiError } from "../../utils/apiError";
 
 // Fetches user cart with populated product data and precalculated totals
@@ -35,6 +36,11 @@ export async function getCartByUserId(userId: string) {
 }
 
 export async function addToCart(userId: string, productId: string, quantity: number) {
+  const user = await User.findById(userId);
+  if (user && ((user.role || "").toLowerCase() === "admin" || (user.role || "").toLowerCase() === "demoadmin")) {
+    throw new ApiError(403, "Admins cannot add products to cart");
+  }
+
   const product = await Product.findById(productId);
   if (!product) throw new ApiError(404, "Product not found");
 

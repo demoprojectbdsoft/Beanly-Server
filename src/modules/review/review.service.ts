@@ -24,6 +24,7 @@ function formatReview(r: any, user?: any, product?: any) {
     userEmail: user?.email || "",
     rating: r.rating,
     comment: r.comment,
+    images: Array.isArray(r.images) ? r.images : [],
     date: r.createdAt,
   };
 }

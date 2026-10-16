@@ -57,6 +57,18 @@ function formatProduct(product: any, ratingsMap?: Map<string, any>) {
       ? Math.round(((effectivePrice - obj.investPrice) / effectivePrice) * 100 * 10) / 10
       : undefined;
 
+  const unitProfit =
+    obj.investPrice != null && effectivePrice != null
+      ? Math.round((effectivePrice - obj.investPrice) * 100) / 100
+      : undefined;
+
+  const sellCount = typeof obj.sellCount === "number" ? obj.sellCount : 0;
+
+  const totalProfit =
+    unitProfit != null
+      ? Math.round(unitProfit * sellCount * 100) / 100
+      : undefined;
+
   return {
     ...obj,
     id,
@@ -67,6 +79,9 @@ function formatProduct(product: any, ratingsMap?: Map<string, any>) {
     isOfferExpired: Boolean(isOfferExpired),
     investPrice: obj.investPrice,
     profitMargin,
+    unitProfit,
+    totalProfit,
+    sellCount,
     rating: stat ? Math.round(stat.avgRating * 10) / 10 : (obj.rating ?? 0),
     reviewCount: stat ? stat.count : (obj.reviewCount ?? 0),
   };

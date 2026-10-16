@@ -11,20 +11,41 @@ const orderItemInputSchema = z.object({
 });
 
 const shippingAddressSchema = z.object({
-  fullName: z.string().min(1, "Full name is required"),
-  phone: z.string().min(1, "Phone number is required"),
-  address: z.string().min(1, "Address is required"),
-  city: z.string().min(1, "City is required"),
-  postalCode: z.string().min(1, "Postal code is required"),
+  fullName: z.string().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+  city: z.string().optional(),
+  postalCode: z.string().optional(),
 });
 
-export const createOrderSchema = z.object({
-  userId: objectId,
-  items: z.array(orderItemInputSchema).min(1, "Order must have at least one item"),
-  shippingAddress: shippingAddressSchema,
-  paymentMethod: z.enum(["cod", "bkash", "rocket", "nagad"]),
-  transactionId: z.string().optional(),
-});
+export const createOrderSchema = z
+  .object({
+    userId: objectId,
+    items: z.array(orderItemInputSchema).min(1, "Order must have at least one item"),
+    shippingAddress: shippingAddressSchema.optional(),
+    paymentMethod: z.enum(["cod", "bkash", "rocket", "nagad"]),
+    transactionId: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.paymentMethod === "cod") {
+      const sa = data.shippingAddress;
+      if (
+        !sa ||
+        !sa.fullName?.trim() ||
+        !sa.phone?.trim() ||
+        !sa.address?.trim() ||
+        !sa.city?.trim() ||
+        !sa.postalCode?.trim()
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Shipping address (full name, phone, address, city, postal code) is required for Cash on Delivery",
+          path: ["shippingAddress"],
+        });
+      }
+    }
+  });
 
 export const updateOrderStatusSchema = z.object({
   orderStatus: z.enum(["confirmed", "processing", "shipped", "delivered", "cancelled"]),

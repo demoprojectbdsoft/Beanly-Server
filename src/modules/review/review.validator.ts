@@ -5,11 +5,13 @@ export const createReviewSchema = z.object({
   userId: z.string().min(1, "User ID is required"),
   rating: z.number().int().min(1, "Rating must be at least 1").max(5, "Rating cannot exceed 5"),
   comment: z.string().min(1, "Comment is required"),
+  images: z.array(z.string().url()).max(5, "Maximum 5 images per review").optional().default([]),
 });
 
 export const updateReviewSchema = z.object({
   rating: z.number().int().min(1).max(5).optional(),
   comment: z.string().min(1).optional(),
+  images: z.array(z.string().url()).max(5).optional(),
 });
 
 export const getReviewsQuerySchema = z.object({
@@ -24,4 +26,4 @@ export const getReviewsQuerySchema = z.object({
 
 export type CreateReviewInput = z.infer<typeof createReviewSchema>;
 export type UpdateReviewInput = z.infer<typeof updateReviewSchema>;
-export type GetReviewsQuery = z.infer<typeof getReviewsQuerySchema>;
+export type GetReviewsQuery = z.infer<typeof getReviewsQuerySchema>;

@@ -1,5 +1,6 @@
 import { Wishlist } from "./wishlist.model";
 import { Product } from "../product/product.model";
+import { User } from "../user/user.model";
 import { ApiError } from "../../utils/apiError";
 
 // Fetches user wishlist and returns items along with totalItems count
@@ -13,6 +14,11 @@ export async function getWishlistByUserId(userId: string) {
 }
 
 export async function addToWishlist(userId: string, productId: string) {
+  const user = await User.findById(userId);
+  if (user && ((user.role || "").toLowerCase() === "admin" || (user.role || "").toLowerCase() === "demoadmin")) {
+    throw new ApiError(403, "Admins cannot add products to wishlist");
+  }
+
   const product = await Product.findById(productId);
   if (!product) throw new ApiError(404, "Product not found");
 

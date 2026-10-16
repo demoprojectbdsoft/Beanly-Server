@@ -13,11 +13,11 @@ const orderItemSchema = new Schema(
 
 const shippingAddressSchema = new Schema(
   {
-    fullName: { type: String, required: true },
-    phone: { type: String, required: true },
-    address: { type: String, required: true },
-    city: { type: String, required: true },
-    postalCode: { type: String, required: true },
+    fullName: { type: String, required: false },
+    phone: { type: String, required: false },
+    address: { type: String, required: false },
+    city: { type: String, required: false },
+    postalCode: { type: String, required: false },
   },
   { _id: false }
 );
@@ -26,7 +26,7 @@ const orderSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     items: [orderItemSchema],
-    shippingAddress: { type: shippingAddressSchema, required: true },
+    shippingAddress: { type: shippingAddressSchema, required: false },
     paymentMethod: { type: String, enum: ["cod", "bkash", "rocket", "nagad"], required: true },
     subtotal: { type: Number, required: true },
     shippingFee: { type: Number, required: true },
