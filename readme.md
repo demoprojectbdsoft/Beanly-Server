@@ -69,7 +69,7 @@ HTTP Request → route.ts → validator.ts (Zod) → controller.ts → service.t
 ## ✨ Features
 
 - **Layered module architecture** — `category`, `subcategory`, `product`, `review`, `wishlist`, `cart`, `user`, `order`, `order-status`, `transaction`, `slide` — each following the same structure.
-- **Full catalog hierarchy** — categories → subcategories → products, with cascade-safe deletes.
+- **Full catalog hierarchy** — categories → subcategories → products. Deleting a category cascades to its subcategories, but the whole delete is cancelled if the category or any of its subcategories still has products attached.
 - **Cart & Wishlist as one-row-per-item** — a compound unique index on `{ userId, productId }`; subtotal computed live.
 - **Dynamic homepage slider** — slides reference a real product by ID; price, image, and discount are read live.
 - **Order status history** — every status transition is logged as its own document.
@@ -79,7 +79,10 @@ HTTP Request → route.ts → validator.ts (Zod) → controller.ts → service.t
 ## ⚙️ Functionalities
 
 - **Full order lifecycle** — `createOrder()` validates stock, computes totals, creates the order and linked transaction, logs status, decrements stock, and clears the cart — in one call.
+- **Order response & resolution** — once an order ships, admin records the customer's response (Order Received / Still Not Received / Order Cancel) along with a description message; the order is then marked `delivered` or `cancelled` based on that response.
 - **Delivery-triggered loyalty points & membership tiers** — points are credited, and the tier re-checked, only when an admin marks the order `delivered`.
+- **Cancellation fails the transaction** — cancelling an order marks its linked transaction as `failed`, regardless of payment method (COD or wallet).
+- **Sell-count tracking** — a product's `sellCount` is incremented by the ordered quantity whenever an order succeeds.
 - **Review-driven ratings** — `recalculateProductRating()` re-aggregates rating and review count on every create/update/delete.
 - **Countdown-driven slider pricing** — once a slide's product countdown ends, its discount reverts to 0 and price reverts to original.
 - **Consistent API responses & error handling** — a shared `apiResponse` helper and `errorMiddleware` + `ApiError` class.
@@ -182,4 +185,4 @@ npm start       # run the compiled server
 
 ## 🎓 About This Project
 
-An internship project for learning and demonstration — not distributed under an open-source license. Feel free to explore the code, but please reach out before reusing or redistributing it.
+A project for learning and demonstration — not distributed under an open-source license. Feel free to explore the code, but please reach out before reusing or redistributing it.

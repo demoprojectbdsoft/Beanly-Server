@@ -15,6 +15,9 @@ export const updateReviewSchema = z.object({
 export const getReviewsQuerySchema = z.object({
   productId: z.string().optional(),
   userId: z.string().optional(),
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  search: z.string().optional(),
+  sort: z.enum(["newest", "oldest", "rating_high", "rating_low"]).optional().default("newest"),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
 });

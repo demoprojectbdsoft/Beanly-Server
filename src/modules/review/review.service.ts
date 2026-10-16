@@ -29,16 +29,78 @@ function formatReview(r: any, user?: any, product?: any) {
 }
 
 export async function getReviews(query: GetReviewsQuery) {
-  const { productId, userId, page, limit } = query;
+  const { productId, userId, rating, search, sort, page, limit } = query;
 
-  // Build filter — only add fields if provided
+  // Build base filter — only add fields if provided
   const filter: any = {};
   if (productId) filter.productId = toIdQuery(productId);
   if (userId) filter.userId = toIdQuery(userId);
+  if (rating) filter.rating = rating;
+
+  // Determine sort order
+  let sortStage: any = { createdAt: -1 }; // default: newest
+  if (sort === "oldest") sortStage = { createdAt: 1 };
+  else if (sort === "rating_high") sortStage = { rating: -1, createdAt: -1 };
+  else if (sort === "rating_low") sortStage = { rating: 1, createdAt: -1 };
 
   const skip = (page - 1) * limit;
+
+  // If search is provided we need to join users/products to search across names/titles
+  if (search && search.trim()) {
+    const searchRegex = new RegExp(search.trim(), "i");
+
+    // Use aggregation to join user and product, then filter by search term
+    const pipeline: any[] = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: "users",
+          let: { uid: { $toObjectId: "$userId" } },
+          pipeline: [{ $match: { $expr: { $eq: ["$_id", "$$uid"] } } }, { $project: { name: 1, email: 1, image: 1 } }],
+          as: "userDoc",
+        },
+      },
+      { $unwind: { path: "$userDoc", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "products",
+          let: { pid: { $toObjectId: "$productId" } },
+          pipeline: [{ $match: { $expr: { $eq: ["$_id", "$$pid"] } } }, { $project: { title: 1, slug: 1, image: 1, price: 1 } }],
+          as: "productDoc",
+        },
+      },
+      { $unwind: { path: "$productDoc", preserveNullAndEmptyArrays: true } },
+      {
+        $match: {
+          $or: [
+            { comment: searchRegex },
+            { "userDoc.name": searchRegex },
+            { "productDoc.title": searchRegex },
+          ],
+        },
+      },
+    ];
+
+    const countPipeline = [...pipeline, { $count: "total" }];
+    const dataPipeline = [...pipeline, { $sort: sortStage }, { $skip: skip }, { $limit: limit }];
+
+    const [countResult, reviews] = await Promise.all([
+      ProductReview.aggregate(countPipeline),
+      ProductReview.aggregate(dataPipeline),
+    ]);
+    const total = countResult[0]?.total ?? 0;
+
+    return {
+      reviews: reviews.map((r: any) =>
+        formatReview(r, r.userDoc, r.productDoc)
+      ),
+      pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    };
+  }
+
+  // No search — simple find with sort
   const [reviews, total] = await Promise.all([
-    ProductReview.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ProductReview.find(filter).sort(sortStage).skip(skip).limit(limit).lean(),
     ProductReview.countDocuments(filter),
   ]);
 
@@ -70,7 +132,7 @@ export async function getReviews(query: GetReviewsQuery) {
         productMap.get(r.productId?.toString())
       )
     ),
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
   };
 }
 
