@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import { Category } from "./category.model";
 import { SubCategory } from "../subcategory/subcategory.model";
 import { Product } from "../product/product.model";
@@ -30,13 +31,26 @@ export async function updateCategory(id: string, data: UpdateCategoryInput) {
 
 export async function deleteCategory(id: string) {
   // Block delete if any products belong to this category or its subcategories
-  const subIds = await SubCategory.find({ categoryId: id }).distinct("_id");
+  const idObj = Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : null;
+  const catMatches: any[] = idObj ? [id, idObj] : [id];
+
+  const subCategories = await SubCategory.find({
+    categoryId: { $in: catMatches },
+  }).select("_id");
+
+  const subIdObjs = subCategories.map((s) => s._id);
+  const subIdStrs = subCategories.map((s) => s._id.toString());
+  const allSubMatches: any[] = [...subIdObjs, ...subIdStrs];
+
   const productCount = await Product.countDocuments({
-    $or: [{ categoryId: id }, { subCategoryIds: { $in: subIds } }],
+    $or: [
+      { categoryId: { $in: catMatches } },
+      { subCategoryIds: { $in: allSubMatches } },
+    ],
   });
   if (productCount > 0) throw new ApiError(400, "Cannot delete category with active products");
 
   // Delete all child subcategories first, then the category itself
-  await SubCategory.deleteMany({ categoryId: id });
+  await SubCategory.deleteMany({ categoryId: { $in: catMatches } });
   await Category.findByIdAndDelete(id);
 }

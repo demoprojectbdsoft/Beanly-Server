@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import { SubCategory } from "./subcategory.model";
 import { Category } from "../category/category.model";
 import { Product } from "../product/product.model";
@@ -28,7 +29,12 @@ export async function updateSubCategory(id: string, data: UpdateSubCategoryInput
 
 export async function deleteSubCategory(id: string) {
   // Block delete if any products are linked to this subcategory
-  const productCount = await Product.countDocuments({ subCategoryIds: id });
+  const idObj = Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : null;
+  const subMatches: any[] = idObj ? [id, idObj] : [id];
+
+  const productCount = await Product.countDocuments({
+    subCategoryIds: { $in: subMatches },
+  });
   if (productCount > 0) throw new ApiError(400, "Cannot delete subcategory with active products");
   await SubCategory.findByIdAndDelete(id);
 }
