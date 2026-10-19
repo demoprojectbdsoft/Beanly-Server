@@ -2,7 +2,15 @@ import mongoose, { Schema } from "mongoose";
 import { inDemoRequest } from "./demo.context";
 
 // Only these collections are tracked (what the demo admin may change).
-export const TRACKED = ["categories", "subcategories", "products", "slides", "productreviews"];
+export const TRACKED = [
+  "categories",
+  "subcategories",
+  "products",
+  "slides",
+  "productreviews",
+  "orders",
+  "orderstatuslogs",
+];
 export const UNDO_COLLECTION = "demo_undo";
 
 type UndoEntry = { _id: string; coll: string; docId: unknown; before: Record<string, unknown> | null; at: Date };
@@ -20,10 +28,20 @@ async function remember(coll: string, docId: unknown, before: Record<string, unk
 }
 
 async function rememberMatches(model: any, filter: object, limit?: number) {
-  const coll = model.collection.name;
-  let cursor = model.collection.find(filter);
-  if (limit) cursor = cursor.limit(limit);
-  for (const doc of await cursor.toArray()) await remember(coll, doc._id, doc);
+  const coll = model.collection?.name;
+  if (!coll || !TRACKED.includes(coll)) return;
+  try {
+    let query = model.find(filter).lean();
+    if (limit) query = query.limit(limit);
+    const docs = await query.exec();
+    for (const doc of docs) {
+      if (doc && doc._id) {
+        await remember(coll, doc._id, doc);
+      }
+    }
+  } catch (err) {
+    console.error(`[demoUndoPlugin] Failed to remember matches for ${coll}:`, err);
+  }
 }
 
 // Global plugin: must be registered BEFORE the models are created.
@@ -33,25 +51,44 @@ export function demoUndoPlugin(schema: Schema) {
 
   for (const op of single) {
     schema.pre(op, async function (this: any) {
-      if (!inDemoRequest() || !TRACKED.includes(this.model.collection.name)) return;
+      if (!inDemoRequest() || !TRACKED.includes(this.model?.collection?.name)) return;
       await rememberMatches(this.model, this.getFilter(), 1);
     });
   }
   for (const op of many) {
     schema.pre(op, async function (this: any) {
-      if (!inDemoRequest() || !TRACKED.includes(this.model.collection.name)) return;
+      if (!inDemoRequest() || !TRACKED.includes(this.model?.collection?.name)) return;
       await rememberMatches(this.model, this.getFilter());
     });
   }
 
   schema.pre("save", async function (this: any) {
-    const coll = this.constructor.collection.name;
+    const coll = this.constructor?.collection?.name;
     if (!inDemoRequest() || !TRACKED.includes(coll)) return;
-    if (this.isNew) {
-      await remember(coll, this._id, null);
-    } else {
-      const before = await this.constructor.collection.findOne({ _id: this._id });
-      if (before) await remember(coll, this._id, before);
+    try {
+      if (this.isNew) {
+        await remember(coll, this._id, null);
+      } else {
+        const before = await this.constructor.findById(this._id).lean();
+        if (before) await remember(coll, this._id, before);
+      }
+    } catch (err) {
+      console.error(`[demoUndoPlugin] Failed to remember save for ${coll}:`, err);
+    }
+  });
+
+  schema.post("insertMany", async function (docs: any) {
+    if (!inDemoRequest()) return;
+    try {
+      const list = Array.isArray(docs) ? docs : [docs];
+      for (const doc of list) {
+        const coll = doc?.constructor?.collection?.name;
+        if (coll && TRACKED.includes(coll)) {
+          await remember(coll, doc._id, null);
+        }
+      }
+    } catch (err) {
+      console.error(`[demoUndoPlugin] Failed to remember insertMany:`, err);
     }
   });
 }

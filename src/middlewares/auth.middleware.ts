@@ -37,18 +37,30 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       role: payload.role as string | undefined,
     };
 
-    if (isDemoAdmin(req.user.email)) {
+    if (isDemoAdmin(req.user.email, req.user.role)) {
       return demoStore.run({ demo: true }, () => next());
     }
     return next();
   } catch {
     // If not a JWT, check Better-Auth session in DB
-    const db = (await import("mongoose")).default.connection.db;
+    const mongoose = (await import("mongoose")).default;
+    const db = mongoose.connection.db;
     const session = await db?.collection("session").findOne({ token });
     if (session) {
-      const user = await db?.collection("user").findOne({ _id: session.userId });
+      const rawUserId = session.userId;
+      const objectId = mongoose.Types.ObjectId.isValid(String(rawUserId))
+        ? new mongoose.Types.ObjectId(String(rawUserId))
+        : rawUserId;
+
+      const user = await db?.collection("user").findOne({
+        $or: [{ _id: rawUserId }, { _id: objectId }],
+      });
+
       if (user) {
         req.user = { id: String(user._id), email: user.email, role: user.role };
+        if (isDemoAdmin(req.user.email, req.user.role)) {
+          return demoStore.run({ demo: true }, () => next());
+        }
         return next();
       }
     }

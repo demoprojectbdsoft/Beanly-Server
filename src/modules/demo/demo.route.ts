@@ -2,18 +2,34 @@ import { Router, Request, Response, NextFunction } from "express";
 import { ApiError } from "../../utils/apiError";
 import * as demoController from "./demo.controller";
 
+import { requireAuth } from "../../middlewares/auth.middleware";
+
 // Vercel Cron automatically sends `Authorization: Bearer <CRON_SECRET>`.
-// No secret configured = nobody gets in.
-function requireCronSecret(req: Request, _res: Response, next: NextFunction) {
+// Also allows authenticated Store Admin to trigger manual restore.
+function requireCronOrAdmin(req: Request, res: Response, next: NextFunction) {
   const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
-    throw new ApiError(401, "Unauthorized");
+  const authHeader = req.headers.authorization;
+
+  if (secret && authHeader === `Bearer ${secret}`) {
+    return next();
   }
-  next();
+
+  // Also allow authenticated admin to trigger restore
+  return requireAuth(req, res, (err?: any) => {
+    if (err) {
+      return next(new ApiError(401, "Unauthorized: Valid CRON_SECRET or Admin token required"));
+    }
+    const role = (req.user?.role || "").toLowerCase();
+    if (role === "admin") {
+      return next();
+    }
+    return next(new ApiError(403, "Forbidden: Store Admin privileges required"));
+  });
 }
 
 const router = Router();
 
-router.get("/restore", requireCronSecret, demoController.restoreDemoChanges); // Vercel Cron only makes GET requests
+router.get("/restore", requireCronOrAdmin, demoController.restoreDemoChanges); // Vercel Cron only makes GET requests
+router.post("/restore", requireCronOrAdmin, demoController.restoreDemoChanges); // Convenient for API/manual calls
 
 export default router;

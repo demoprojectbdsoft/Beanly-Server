@@ -9,18 +9,37 @@ export async function restoreDemoChanges() {
   const entries = await log.find().toArray();
 
   const counts = { removed: 0, restored: 0 };
+  if (!entries || entries.length === 0) {
+    return { restoredAt: new Date(), ...counts };
+  }
+
+  const toObjectId = (id: any) => {
+    if (id instanceof mongoose.Types.ObjectId) return id;
+    if (typeof id === "string" && mongoose.Types.ObjectId.isValid(id)) {
+      return new mongoose.Types.ObjectId(id);
+    }
+    return id;
+  };
 
   // 1) delete what the demo admin created (first, so unique slugs can't clash)
   for (const entry of entries.filter((e) => e.before === null)) {
-    await mongoose.connection.collection(entry.coll).deleteOne({ _id: entry.docId });
+    const rawId = entry.docId;
+    const objectId = toObjectId(rawId);
+    await mongoose.connection
+      .collection(entry.coll)
+      .deleteOne({ _id: { $in: [rawId, objectId] } });
     counts.removed++;
   }
 
   // 2) put back what the demo admin edited or deleted
   for (const entry of entries.filter((e) => e.before !== null)) {
+    const rawId = entry.docId;
+    const objectId = toObjectId(rawId);
+    const targetId = entry.before._id ? toObjectId(entry.before._id) : objectId;
+
     await mongoose.connection
       .collection(entry.coll)
-      .replaceOne({ _id: entry.docId }, entry.before, { upsert: true });
+      .replaceOne({ _id: targetId }, entry.before, { upsert: true });
     counts.restored++;
   }
 

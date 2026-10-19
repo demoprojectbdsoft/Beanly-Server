@@ -6,6 +6,12 @@
       "use": "@vercel/node"
     }
   ],
+  "crons": [
+    {
+      "path": "/api/demo/restore",
+      "schedule": "0 2 * * *"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",
