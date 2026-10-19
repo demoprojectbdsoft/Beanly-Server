@@ -3,6 +3,8 @@ import { ApiError } from "../utils/apiError";
 import { ENV } from "../config/env";
 import { createRemoteJWKSet, jwtVerify } from "jose-cjs";
 
+import { demoStore, isDemoAdmin } from "../modules/demo/demo.context";
+
 const JWKS = createRemoteJWKSet(new URL(`${ENV.NEXT_PUBLIC_CLIENT_URL}/api/auth/jwks`));
 
 declare global {
@@ -34,6 +36,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       email: payload.email as string | undefined,
       role: payload.role as string | undefined,
     };
+
+    if (isDemoAdmin(req.user.email)) {
+      return demoStore.run({ demo: true }, () => next());
+    }
     return next();
   } catch {
     // If not a JWT, check Better-Auth session in DB

@@ -1,3 +1,6 @@
+import "./modules/demo/demo.plugin";
+import demoRoutes from "./modules/demo/demo.route";
+
 import express from "express";
 import cors from "cors";
 import categoryRoutes from "./modules/category/category.route";
@@ -40,6 +43,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/slides", slideRoutes);
 app.use("/api/order-status", orderStatusRoutes);
 app.use("/api/transactions", transactionRoutes);
+app.use("/api/demo", demoRoutes);
 
 app.use(notFound);
 app.use(errorMiddleware);
