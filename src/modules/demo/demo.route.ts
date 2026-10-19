@@ -4,20 +4,26 @@ import * as demoController from "./demo.controller";
 
 import { requireAuth } from "../../middlewares/auth.middleware";
 
-// Vercel Cron automatically sends `Authorization: Bearer <CRON_SECRET>`.
+// Vercel Cron automatically sends `Authorization: Bearer <CRON_SECRET>` or `x-vercel-cron: "1"`.
 // Also allows authenticated Store Admin to trigger manual restore.
 function requireCronOrAdmin(req: Request, res: Response, next: NextFunction) {
   const secret = process.env.CRON_SECRET;
   const authHeader = req.headers.authorization;
 
+  // 1. Valid CRON_SECRET bearer token
   if (secret && authHeader === `Bearer ${secret}`) {
     return next();
   }
 
-  // Also allow authenticated admin to trigger restore
+  // 2. Direct Vercel Cron invocation header
+  if (req.headers["x-vercel-cron"] === "1") {
+    return next();
+  }
+
+  // 3. Authenticated store admin manual trigger
   return requireAuth(req, res, (err?: any) => {
     if (err) {
-      return next(new ApiError(401, "Unauthorized: Valid CRON_SECRET or Admin token required"));
+      return next(new ApiError(401, "Unauthorized: Valid CRON_SECRET, Vercel Cron, or Admin token required"));
     }
     const role = (req.user?.role || "").toLowerCase();
     if (role === "admin") {

@@ -14,6 +14,7 @@ import orderRoutes from "./modules/order/order.route";
 import slideRoutes from "./modules/slide/slide.route";
 import orderStatusRoutes from "./modules/order-status/order-status.route";
 import transactionRoutes from "./modules/transaction/transaction.route";
+import siteSettingsRoutes from "./modules/site-settings/site-settings.route";
 import { errorMiddleware } from "./middlewares/error.middleware";
 import { notFound } from "./middlewares/notFound.middleware";
 
@@ -43,6 +44,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/slides", slideRoutes);
 app.use("/api/order-status", orderStatusRoutes);
 app.use("/api/transactions", transactionRoutes);
+app.use("/api/site-settings", siteSettingsRoutes);
 app.use("/api/demo", demoRoutes);
 
 app.use(notFound);

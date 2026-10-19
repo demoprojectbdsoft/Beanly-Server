@@ -9,7 +9,7 @@
   "crons": [
     {
       "path": "/api/demo/restore",
-      "schedule": "0 0 * * *"
+      "schedule": "0 18 * * *"
     }
   ],
   "routes": [

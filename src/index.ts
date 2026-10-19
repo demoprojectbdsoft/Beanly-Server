@@ -8,16 +8,22 @@ import { restoreDemoChanges } from "./modules/demo/demo.service";
 async function startServer() {
   await connectDB();
 
-  // Schedule daily restore of demo admin changes at 12:00 AM (midnight)
-  cron.schedule("0 0 * * *", async () => {
-    console.log("[CRON] 🕒 Running daily demo data restore at 12:00 AM...");
-    try {
-      const result = await restoreDemoChanges();
-      console.log("[CRON] ✅ Demo data restored successfully:", result);
-    } catch (err) {
-      console.error("[CRON] ❌ Failed to restore demo data:", err);
+  // Schedule daily restore of demo admin changes at 12:00 AM (midnight local time)
+  cron.schedule(
+    "0 0 * * *",
+    async () => {
+      console.log("[CRON] 🕒 Running daily demo data restore at 12:00 AM...");
+      try {
+        const result = await restoreDemoChanges();
+        console.log("[CRON] ✅ Demo data restored successfully:", result);
+      } catch (err) {
+        console.error("[CRON] ❌ Failed to restore demo data:", err);
+      }
+    },
+    {
+      timezone: process.env.CRON_TIMEZONE || "Asia/Dhaka",
     }
-  });
+  );
 
   app.listen(ENV.PORT, () => {
     console.log(`Server running on port ${ENV.PORT}`);
