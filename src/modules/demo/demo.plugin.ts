@@ -13,16 +13,37 @@ export const TRACKED = [
 ];
 export const UNDO_COLLECTION = "demo_undo";
 
-type UndoEntry = { _id: string; coll: string; docId: unknown; before: Record<string, unknown> | null; at: Date };
+type UndoEntry = {
+  _id: string;
+  coll: string;
+  docId: unknown;
+  before: Record<string, unknown> | null;
+  at: Date;
+  atLocal: string;
+  timezone: string;
+};
 const undoLog = () => mongoose.connection.collection<UndoEntry>(UNDO_COLLECTION);
+
+// Helper to get current Date shifted to UTC+6 so BSON Date in MongoDB matches local time
+function getUtc6Date(): Date {
+  return new Date(Date.now() + 6 * 60 * 60 * 1000);
+}
+
+// Formatted ISO string with +06:00 offset: YYYY-MM-DDTHH:mm:ss.sss+06:00
+function getUtc6String(): string {
+  const d = new Date(Date.now() + 6 * 60 * 60 * 1000);
+  return d.toISOString().replace("Z", "+06:00");
+}
 
 // Remember what a document looked like BEFORE the demo admin touched it
 // (`before: null` = it didn't exist). The first write wins, so we always keep
 // the original state, however many times it's edited afterwards.
 async function remember(coll: string, docId: unknown, before: Record<string, unknown> | null) {
+  const at = getUtc6Date();
+  const atLocal = getUtc6String();
   await undoLog().updateOne(
     { _id: `${coll}:${String(docId)}` },
-    { $setOnInsert: { coll, docId, before, at: new Date() } },
+    { $setOnInsert: { coll, docId, before, at, atLocal, timezone: "UTC+6" } },
     { upsert: true }
   );
 }

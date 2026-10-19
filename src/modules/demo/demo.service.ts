@@ -9,8 +9,11 @@ export async function restoreDemoChanges() {
   const entries = await log.find().toArray();
 
   const counts = { removed: 0, restored: 0 };
+  const restoredAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+  const restoredAtLocal = restoredAt.toISOString().replace("Z", "+06:00");
+
   if (!entries || entries.length === 0) {
-    return { restoredAt: new Date(), ...counts };
+    return { restoredAt, restoredAtLocal, timezone: "UTC+6", ...counts };
   }
 
   const toObjectId = (id: any) => {
@@ -44,5 +47,5 @@ export async function restoreDemoChanges() {
   }
 
   await log.deleteMany({ _id: { $in: entries.map((e) => e._id) } });
-  return { restoredAt: new Date(), ...counts };
+  return { restoredAt, restoredAtLocal, timezone: "UTC+6", ...counts };
 }
