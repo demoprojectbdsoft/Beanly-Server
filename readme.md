@@ -16,45 +16,54 @@
 
 ## 📑 Table of Contents
 
-- [📖 About](#-about)
-- [🎯 Project Overview](#-project-overview)
-  - [Platforms Used](#platforms-used)
-- [🏗️ Architecture at a Glance](#️-architecture-at-a-glance)
-- [✨ Features](#-features)
-- [⚙️ Functionalities](#️-functionalities)
-- [🔒 Security](#-security)
-- [🧩 API Modules](#-api-modules)
-- [📦 npm Packages Used](#-npm-packages-used)
-- [🔑 Environment Variables](#-environment-variables)
-- [🚀 Getting Started](#-getting-started)
-- [🗺️ Future Roadmap](#️-future-roadmap)
-- [🎓 About This Project](#-about-this-project)
+1. [Overview](#-overview)
+2. [Quick Navigation](#-quick-navigation)
+3. [Architecture](#️-architecture)
+4. [API Modules](#-api-modules)
+5. [Business Rules](#-business-rules)
+   - [Catalog](#catalog)
+   - [Cart & Wishlist](#cart--wishlist)
+   - [Orders & Payments](#orders--payments)
+   - [Loyalty & Membership](#loyalty--membership)
+   - [Reviews & Ratings](#reviews--ratings)
+   - [Slider & Pricing](#slider--pricing)
+6. [Demo Admin Mode](#-demo-admin-mode)
+   - [How it works](#how-it-works)
+   - [Enable it](#enable-it)
+   - [Test it](#test-it)
+   - [Limitations](#limitations)
+7. [Security](#-security)
+8. [Tech Stack](#-tech-stack)
+9. [Setup](#-setup)
+   - [Environment Variables](#environment-variables)
+   - [Run Locally](#run-locally)
+10. [Future Roadmap](#️-future-roadmap)
+11. [About This Project](#-about-this-project)
 
 ---
 
-## 📖 About
+## 📖 Overview
 
-Sparq-Server is the backend API for the [Sparq](https://github.com/demoprojectbdsoft/Sparq-Electronics-Store) electronics e-commerce platform — a layered Express architecture where every feature (categories, products, cart, wishlist, reviews, orders, transactions, users) lives in its own module, split into **model → validator → service → controller → route**.
+Sparq-Server is the backend API for the [Sparq](https://github.com/demoprojectbdsoft/Sparq-Electronics-Store) electronics e-commerce platform. Every feature (categories, products, cart, wishlist, reviews, orders, transactions, users) lives in its own module, split into **model → validator → service → controller → route**.
 
-Authentication is owned by the Next.js frontend (better-auth); this server verifies every protected request's JWT against the frontend's JWKS endpoint, with no shared secret and no duplicated user table.
+Authentication is owned by the Next.js frontend (better-auth). This server verifies every protected request's JWT against the frontend's JWKS endpoint — no shared secret and no duplicated user table.
 
 ---
 
-## 🎯 Project Overview
+## 🧭 Quick Navigation
 
-### Platforms Used
-
-| Layer | Choice |
+| I want to know about… | Go to |
 |---|---|
-| Runtime | Node.js, Express.js 5, TypeScript |
-| Database | MongoDB Atlas via Mongoose |
-| Validation | Zod |
-| Auth | JWT verification via the frontend's better-auth JWKS endpoint (`jose-cjs`) |
-| Hosting | Vercel Serverless Functions |
+| How the code is organised | [Architecture](#️-architecture) |
+| What each module does | [API Modules](#-api-modules) |
+| How orders, points, and ratings are handled | [Business Rules](#-business-rules) |
+| How the demo admin's changes get reverted | [Demo Admin Mode](#-demo-admin-mode) |
+| Required env variables | [Environment Variables](#environment-variables) |
+| Running the server | [Run Locally](#run-locally) |
 
 ---
 
-## 🏗️ Architecture at a Glance
+## 🏗️ Architecture
 
 Every module flows through the same five layers:
 
@@ -62,39 +71,17 @@ Every module flows through the same five layers:
 HTTP Request → route.ts → validator.ts (Zod) → controller.ts → service.ts → model.ts → MongoDB Atlas
 ```
 
-`middlewares/` handles auth, authorization, and error formatting. `utils/` holds the shared `ApiError`, `apiResponse`, and `catchAsync` helpers every module builds on.
+| Layer | Responsibility |
+|---|---|
+| `route` | Maps URLs to controllers and attaches auth/role middleware. |
+| `validator` | Zod schema — every write endpoint validates its payload before it reaches a service. |
+| `controller` | Reads the request and sends the response through `apiResponse`. |
+| `service` | Business logic and database access. |
+| `model` | Mongoose schema. |
 
----
-
-## ✨ Features
-
-- **Layered module architecture** — `category`, `subcategory`, `product`, `review`, `wishlist`, `cart`, `user`, `order`, `order-status`, `transaction`, `slide` — each following the same structure.
-- **Full catalog hierarchy** — categories → subcategories → products. Deleting a category cascades to its subcategories, but the whole delete is cancelled if the category or any of its subcategories still has products attached.
-- **Cart & Wishlist as one-row-per-item** — a compound unique index on `{ userId, productId }`; subtotal computed live.
-- **Dynamic homepage slider** — slides reference a real product by ID; price, image, and discount are read live.
-- **Order status history** — every status transition is logged as its own document.
-
----
-
-## ⚙️ Functionalities
-
-- **Full order lifecycle** — `createOrder()` validates stock, computes totals, creates the order and linked transaction, logs status, decrements stock, and clears the cart — in one call.
-- **Order response & resolution** — once an order ships, admin records the customer's response (Order Received / Still Not Received / Order Cancel) along with a description message; the order is then marked `delivered` or `cancelled` based on that response.
-- **Delivery-triggered loyalty points & membership tiers** — points are credited, and the tier re-checked, only when an admin marks the order `delivered`.
-- **Cancellation fails the transaction** — cancelling an order marks its linked transaction as `failed`, regardless of payment method (COD or wallet).
-- **Sell-count tracking** — a product's `sellCount` is incremented by the ordered quantity whenever an order succeeds.
-- **Review-driven ratings** — `recalculateProductRating()` re-aggregates rating and review count on every create/update/delete.
-- **Countdown-driven slider pricing** — once a slide's product countdown ends, its discount reverts to 0 and price reverts to original.
-- **Consistent API responses & error handling** — a shared `apiResponse` helper and `errorMiddleware` + `ApiError` class.
-
----
-
-## 🔒 Security
-
-- **Every private route secured with auth + authorization middleware** — `requireAuth` verifies the bearer JWT via JWKS; `requireRole(...)` gates admin-only routes.
-- **Zod validation everywhere** — every write endpoint validates its payload before it reaches a service.
-- **Server-trusted money math, always** — price, discount, shipping fee, totals, and points are computed from the database, never accepted from the client.
-- **Stateless, cross-service JWT auth** — no shared session state between frontend and backend.
+Shared pieces:
+- `middlewares/` — auth, authorization, and error formatting.
+- `utils/` — `ApiError`, `apiResponse`, and `catchAsync`, used by every module for consistent responses and error handling.
 
 ---
 
@@ -110,13 +97,159 @@ HTTP Request → route.ts → validator.ts (Zod) → controller.ts → service.t
 | `wishlist` | Per-user saved products |
 | `cart` | Per-user cart items with live-computed subtotal |
 | `order` | Order placement and retrieval |
-| `order-status` | Status history log per order |
+| `order-status` | Status history log per order — every transition is its own document |
 | `transaction` | Payment records linked to orders |
 | `user` | Access to the better-auth-managed user collection |
+| `demo` | Demo admin change tracking and the daily restore endpoint |
 
 ---
 
-## 📦 npm Packages Used
+## 📋 Business Rules
+
+### Catalog
+
+```
+Category ─► Subcategory ─► Product
+```
+
+- **Cascade delete** — deleting a category also deletes its subcategories.
+- **Delete guard** — the whole delete is cancelled if the category or any of its subcategories still has products attached.
+- **Sell count** — a product's `sellCount` is incremented by the ordered quantity whenever an order succeeds.
+
+### Cart & Wishlist
+
+- One row per item, with a compound unique index on `{ userId, productId }`.
+- Cart subtotal is computed live.
+
+### Orders & Payments
+
+```
+createOrder() ─► validate stock ─► compute totals ─► create order + linked transaction
+              ─► log status ─► decrement stock ─► clear cart
+```
+
+- **One call** — `createOrder()` does all of the above in a single flow.
+- **Order response** — once an order ships, admin records the customer's response (Order Received / Still Not Received / Order Cancel) with a description message. The order is then marked `delivered` or `cancelled` based on that response.
+- **Cancellation** — marks the linked transaction as `failed`, regardless of payment method (COD or wallet).
+- **Server-trusted money** — price, discount, shipping fee, totals, and points are computed from the database, never accepted from the client.
+
+### Loyalty & Membership
+
+- Points are credited, and the tier re-checked, **only when an admin marks the order `delivered`**.
+
+### Reviews & Ratings
+
+- `recalculateProductRating()` re-aggregates a product's rating and review count on every create, update, and delete.
+
+### Slider & Pricing
+
+- Slides reference a real product by ID; price, image, and discount are read live.
+- Once a slide's product countdown ends, its discount reverts to 0 and its price reverts to the original.
+
+---
+
+## 🧪 Demo Admin Mode
+
+The shared demo admin can add, edit, and delete catalog data — **categories, subcategories, products, slides, and reviews** — and the server undoes all of it automatically every day. Real admin changes are never touched.
+
+### How it works
+
+```
+Demo admin writes ─► original document saved to demo_undo  ─► change goes live
+Real admin writes ─► nothing logged                        ─► change is permanent
+                                   │
+        Daily cron: GET /api/demo/restore
+                                   ▼
+   Added ─► deleted      Edited ─► original value restored      Deleted ─► brought back
+```
+
+| File (`src/modules/demo/`) | Role |
+|---|---|
+| `demo.context.ts` | Marks a request as coming from the demo admin (matched by the JWT email). |
+| `demo.plugin.ts` | Mongoose plugin. Before a demo-admin write, saves the document's original state to `demo_undo`. The first write wins, so the true original is always kept. |
+| `demo.service.ts` | Reads `demo_undo` and reverts everything. Safe to run twice. |
+| `demo.route.ts` / `demo.controller.ts` | The `GET /api/demo/restore` endpoint, locked behind `CRON_SECRET`. |
+
+**What is not restored:** users, orders, transactions, cart, wishlist, and auth collections. The demo admin is blocked from changing those in the first place.
+
+### Enable it
+
+**1. Register the plugin** — make it the very first import in `app.ts`, before any model loads, and mount the route:
+
+```ts
+import "./modules/demo/demo.plugin";          // first line of app.ts
+// ...
+import demoRoutes from "./modules/demo/demo.route";
+app.use("/api/demo", demoRoutes);             // before notFound
+```
+
+**2. Mark demo requests** — at the end of `requireAuth`:
+
+```ts
+import { demoStore, isDemoAdmin } from "../modules/demo/demo.context";
+
+if (isDemoAdmin(req.user.email)) {
+  return demoStore.run({ demo: true }, () => next());
+}
+next();
+```
+
+**3. Schedule the cron** — in `vercel.json`:
+
+```json
+"crons": [{ "path": "/api/demo/restore", "schedule": "0 20 * * *" }]
+```
+
+**4. Set the env variables** — see [Environment Variables](#environment-variables), then redeploy.
+
+> The schedule is UTC (about 2 AM Asia/Dhaka). On Vercel's free Hobby plan a cron runs once a day, with up to ±1 hour of timing drift.
+
+### Test it
+
+```bash
+curl https://<your-api>/api/demo/restore -H "Authorization: Bearer <CRON_SECRET>"
+```
+
+| Response | Meaning |
+|---|---|
+| `200` — "Demo changes reverted" | Working. |
+| `401` | `CRON_SECRET` is missing, wrong, or the app wasn't redeployed. |
+
+To check end to end: log in as the demo admin, add a category and edit a product, then run the command above. Both changes should disappear.
+
+### Limitations
+
+- A demo-admin edit to a product is reverted whole, so a customer's order placed in between can have its stock count rolled back too.
+- Write methods that bypass Mongoose documents and queries (`insertMany`, `bulkWrite`) are not tracked.
+
+---
+
+## 🔒 Security
+
+| Protection | How it works |
+|---|---|
+| **Auth on every private route** | `requireAuth` verifies the bearer JWT via JWKS. |
+| **Role gates** | `requireRole(...)` protects admin-only routes. |
+| **Stateless auth** | No shared session state between frontend and backend. |
+| **Validation** | Zod validates every write payload. |
+| **Server-trusted money** | Price, discount, shipping fee, totals, and points come from the database, never the client. |
+| **Cron endpoint** | `/api/demo/restore` only accepts `Authorization: Bearer <CRON_SECRET>` (sent automatically by Vercel Cron). With no secret configured, nobody gets in. |
+| **Demo admin limits** | Catalog routes only. User roles/status, orders, transactions, cart, wishlist, account deletion, and password/email changes stay blocked. |
+
+---
+
+## 🧰 Tech Stack
+
+| Layer | Choice |
+|---|---|
+| Runtime | Node.js, Express.js 5, TypeScript |
+| Database | MongoDB Atlas via Mongoose |
+| Validation | Zod |
+| Auth | JWT verification via the frontend's better-auth JWKS endpoint (`jose-cjs`) |
+| Hosting | Vercel Serverless Functions |
+
+<details>
+<summary><b>npm packages used</b></summary>
 
 | Package | Purpose |
 |---|---|
@@ -129,23 +262,33 @@ HTTP Request → route.ts → validator.ts (Zod) → controller.ts → service.t
 | `typescript` / `tsx` | Type safety & dev-time execution |
 | `tsconfig-paths` | `@/` path alias resolution |
 
+</details>
+
 ---
 
-## 🔑 Environment Variables
+## 🚀 Setup
+
+### Environment Variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PORT` | Yes | Port the server listens on. |
+| `MONGODB_URI` | Yes | MongoDB Atlas connection string. |
+| `NEXT_PUBLIC_CLIENT_URL` | Yes | Frontend URL — its `/api/auth/jwks` endpoint is used to verify JWTs. |
+| `CRON_SECRET` | Yes, for demo restore | Long random string. Generate with `openssl rand -hex 24`. |
+| `DEMO_ADMIN_EMAIL` | No | Email of the shared demo admin. Default: `admin@gmail.com`. |
 
 ```env
 PORT=5000
 MONGODB_URI=your_mongodb_atlas_connection_string
-
-# The frontend's /api/auth/jwks endpoint is used to verify JWTs
 NEXT_PUBLIC_CLIENT_URL=your_frontend_app_url
+CRON_SECRET=your_long_random_string
+DEMO_ADMIN_EMAIL=admin@gmail.com
 ```
 
 > ⚠️ Never commit `.env` to version control.
 
----
-
-## 🚀 Getting Started
+### Run Locally
 
 ```bash
 # 1. Clone the repository
@@ -172,7 +315,10 @@ npm start       # run the compiled server
 
 ## 🗺️ Future Roadmap
 
-- [ ] **Rider / delivery module** — a courier role with live order tracking.
+- [ ] **Rider role & delivery module** — a courier role with assigned deliveries, order status updates, and live location tracking.
+- [ ] **Multi-tenant architecture** — a `tenantId` on every collection so each store's data stays isolated, with per-store subdomains.
+- [ ] **Store onboarding API** — self-serve creation of a new store and its first admin.
+- [ ] **Subscription billing** — plans and billing per store.
 - [ ] **"Lucky Box" rewards API** — redeeming loyalty points on a gamified reward.
 - [ ] **Real-time store settings** — a settings module pushed to clients instantly.
 - [ ] **Chat module** — real-time messaging between customers and support/admin.
@@ -185,4 +331,4 @@ npm start       # run the compiled server
 
 ## 🎓 About This Project
 
-A project for learning and demonstration — not distributed under an open-source license. Feel free to explore the code, but please reach out before reusing or redistributing it.
+An internship project for learning and demonstration — not distributed under an open-source license. Feel free to explore the code, but please reach out before reusing or redistributing it.
