@@ -100,6 +100,7 @@ Shared pieces:
 | `order-status` | Status history log per order — every transition is its own document |
 | `transaction` | Payment records linked to orders |
 | `user` | Access to the better-auth-managed user collection |
+| `site-settings` | Store-wide settings — branding, theme, shipping, contact, default shop browse mode, and the `maintenanceMode` flag. Read publicly by the storefront and its maintenance guard. |
 | `demo` | Demo admin change tracking and the daily restore endpoint |
 
 ---
@@ -139,6 +140,7 @@ createOrder() ─► validate stock ─► compute totals ─► create order + 
 
 ### Reviews & Ratings
 
+- A review holds a star rating, a message, and up to 5 images (image URLs, hosted on ImgBB).
 - `recalculateProductRating()` re-aggregates a product's rating and review count on every create, update, and delete.
 
 ### Slider & Pricing
@@ -150,7 +152,7 @@ createOrder() ─► validate stock ─► compute totals ─► create order + 
 
 ## 🧪 Demo Admin Mode
 
-The shared demo admin can add, edit, and delete catalog data — **categories, subcategories, products, slides, and reviews** — and the server undoes all of it automatically every day. Real admin changes are never touched.
+The shared demo admin can add, edit, and delete catalog data — **categories, subcategories, products, and slides**, and moderate reviews — and the server undoes all of it automatically every day. Real admin changes are never touched.
 
 ### How it works
 
@@ -320,7 +322,7 @@ npm start       # run the compiled server
 - [ ] **Store onboarding API** — self-serve creation of a new store and its first admin.
 - [ ] **Subscription billing** — plans and billing per store.
 - [ ] **"Lucky Box" rewards API** — redeeming loyalty points on a gamified reward.
-- [ ] **Real-time store settings** — a settings module pushed to clients instantly.
+- [ ] **Real-time store settings** — settings pushed to clients instantly, instead of being polled (the maintenance page currently re-checks every 4 seconds).
 - [ ] **Chat module** — real-time messaging between customers and support/admin.
 - [ ] **Coupons & promo codes** — discount codes validated and applied server-side.
 - [ ] **Real payment gateway integration** — Stripe/SSLCommerz/bKash, replacing the simulated flow.
