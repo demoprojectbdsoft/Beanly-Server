@@ -28,7 +28,7 @@ export const createProductSchema = z.object({
 
   sku: z.string().optional(),
   description: z.string().optional(),
-  specifications: z.record(z.string(), z.string()).optional(),
+  specifications: z.record(z.string(), z.any()).optional(),
   isFeatured: z.boolean().optional(),
   offerEndDate: z.coerce.date().optional().nullable(),
 });
@@ -67,6 +67,7 @@ export const getProductsQuerySchema = z.object({
       (v) => (v === "true" || v === true ? true : v === "false" || v === false ? false : undefined),
       z.boolean().optional()
     ),
+  mode: z.string().optional(),
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>;

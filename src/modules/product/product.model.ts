@@ -28,12 +28,16 @@ const productSchema = new Schema(
 
     sku: { type: String },
     description: { type: String },
-    specifications: { type: Map, of: String },
+    specifications: { type: Schema.Types.Mixed, default: {} },
     isFeatured: { type: Boolean, default: false },
     offerEndDate: { type: Date },
     offerExpired: { type: Boolean, default: false }, // set true by cron once offer lapses
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { flattenMaps: true },
+    toObject: { flattenMaps: true },
+  }
 );
 
 export const Product = model("Product", productSchema);

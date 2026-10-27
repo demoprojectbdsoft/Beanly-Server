@@ -75,7 +75,9 @@ const siteSettingsSchema = new Schema(
     siteTagline: { type: String, default: "Better products. A brighter you." },
     storeType: { type: String, default: "electronics" }, // e.g. electronics, coffee, clothing
     supportEmail: { type: String, default: "support@sparq.com" },
+    contactEmail: { type: String, default: "contact@sparq.com" },
     supportPhone: { type: String, default: "(800) 8001-8588" },
+    openingHours: { type: String, default: "Mon - Fri: 9:00 AM - 8:00 PM" },
     address: { type: String, default: "" },
 
     // ── SEO / Meta

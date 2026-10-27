@@ -32,9 +32,16 @@ async function getRatingsMap(productIds: string[]) {
 // Shapes a raw Mongoose product document into the API response format.
 // Accepts an optional ratingsMap to attach live rating/reviewCount from the reviews collection.
 function formatProduct(product: any, ratingsMap?: Map<string, any>) {
-  const obj = product.toObject ? product.toObject() : product;
+  const obj = product.toObject ? product.toObject({ flattenMaps: true }) : product;
   const id = obj._id?.toString() ?? obj.id;
   const stat = ratingsMap?.get(id);
+
+  let specifications = obj.specifications;
+  if (specifications instanceof Map) {
+    specifications = Object.fromEntries(specifications);
+  } else if (!specifications || typeof specifications !== "object") {
+    specifications = {};
+  }
 
   const isOfferExpired = obj.offerEndDate && new Date(obj.offerEndDate).getTime() <= Date.now();
 
@@ -49,7 +56,11 @@ function formatProduct(product: any, ratingsMap?: Map<string, any>) {
       : undefined;
 
   // Resolve category label from populated ref or specifications fallback
-  const categoryName = obj.categoryId?.name || obj.specifications?.Category || "";
+  const categoryName =
+    obj.categoryId?.name ||
+    specifications?.Category ||
+    specifications?.category ||
+    "";
 
   // Profit margin % — only meaningful when investPrice is set
   const profitMargin =
@@ -72,6 +83,8 @@ function formatProduct(product: any, ratingsMap?: Map<string, any>) {
   return {
     ...obj,
     id,
+    badges: Array.isArray(obj.badges) ? obj.badges : [],
+    specifications,
     price: effectivePrice,
     originalPrice: effectiveOriginalPrice,
     categories: categoryName ? [categoryName] : [],
