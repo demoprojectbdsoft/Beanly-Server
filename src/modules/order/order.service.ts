@@ -22,7 +22,8 @@ import {
   notifyOrderPlaced,
   notifyOrderStatusChanged,
 } from "../activity/activity.notifications";
-import { ACTIVE_DELIVERY_STATUSES, Delivery, LIVE_DELIVERY_STATUSES } from "../delivery/delivery.model";
+import { Delivery, LIVE_DELIVERY_STATUSES } from "../delivery/delivery.model";
+import { isLapsedOffer } from "../delivery/delivery.flow";
 import { createVendorOrdersForOrder, syncVendorOrdersForParentStatus } from "../vendor/vendor-order.create";
 import {
   evaluateCoupon,
@@ -546,8 +547,44 @@ export async function getOrders(query: GetOrdersQuery) {
     Order.countDocuments(filter),
   ]);
 
+  // Whether a rider already holds the job decides what the store may still do to
+  // an order, and the status menu lives on this list. So the live claim comes
+  // with the rows in one extra read instead of a call per order.
+  const ids = orders.map((order) => order._id);
+  let claims: any[] = [];
+  if (ids.length) {
+    claims = await Delivery.find({
+      orderId: { $in: ids },
+      status: { $in: LIVE_DELIVERY_STATUSES },
+    })
+      .select("orderId status fee expiresAt riderId")
+      .populate("riderId", "name")
+      .lean();
+  }
+  const claimByOrder = new Map<string, any>(
+    claims.map((row) => [String(row.orderId), row] as [string, any])
+  );
+
   return {
-    orders,
+    orders: orders.map((order) => {
+      const claim = claimByOrder.get(String(order._id));
+      return {
+        ...order.toObject(),
+        delivery: claim
+          ? {
+              _id: String(claim._id),
+              status: claim.status,
+              fee: claim.fee ?? 0,
+              expiresAt: claim.expiresAt ?? null,
+              // An offer nobody answered is not a claim. The sweep closes it in
+              // a moment, but the store cannot be locked out of an order until
+              // then, so the row says which of the two it is.
+              holds: !isLapsedOffer(claim),
+              rider: claim.riderId ? { name: (claim.riderId as any)?.name || "" } : null,
+            }
+          : null,
+      };
+    }),
     total,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
@@ -582,6 +619,7 @@ export async function getOrderById(id: string) {
           status: delivery.status,
           fee: delivery.fee ?? 0,
           expiresAt: delivery.expiresAt ?? null,
+          holds: !isLapsedOffer(delivery),
           rider: delivery.riderId
             ? {
                 name: (delivery.riderId as any)?.name || "",
@@ -660,43 +698,45 @@ export async function updateOrderStatus(
       }
     }
 
-    // Once a rider has taken the parcel, the last word is theirs. The store can
-    // still watch the job and settle an issue, but closing the sale or calling
-    // it off behind the rider's back contradicts the person standing at the
-    // door. Stopping the job itself is a separate, deliberate step: cancel the
-    // delivery first, then the order.
+    // The last mile belongs to whoever is carrying it. Once a rider has been
+    // handed the job — offered it and still answering, or already working it —
+    // the store cannot close the sale or call it off behind that person's back.
+    // Stopping the job is a separate, deliberate step: cancel the delivery
+    // first, and the order is the store's again. A request nobody answered is
+    // not a claim, so the expiry is read here rather than trusting the sweep.
+    //
+    // The customer's own cancellation is the one case where the store is only
+    // executing what the buyer asked for, so a rider is stood down instead of
+    // holding the order open.
     if (
       !options.byRider &&
-      (data.orderStatus === "delivered" || data.orderStatus === "cancelled")
+      (data.orderStatus === "delivered" || data.orderStatus === "cancelled") &&
+      !(data.orderStatus === "cancelled" && order.customerResponse === "cancelled")
     ) {
-      const inRiderHands = await Delivery.findOne({
+      const claim = await Delivery.findOne({
         orderId: id,
-        status: { $in: ACTIVE_DELIVERY_STATUSES },
+        status: { $in: LIVE_DELIVERY_STATUSES },
       })
-        .select("_id")
-        .session(session ?? null);
+        .select("_id status expiresAt")
+        .session(session ?? null)
+        .lean();
 
-      if (inRiderHands) {
+      if (claim && !isLapsedOffer(claim)) {
         throw new ApiError(
           400,
-          "A rider has accepted this delivery, so only the rider can close it. Ask them to mark it delivered or cancelled from their dashboard."
+          claim.status === "assigned"
+            ? "A rider has been offered this job and has not answered yet. Cancel the delivery first if this order has to be called off."
+            : "A rider is carrying this delivery, so only the rider can close it. Cancel the delivery first if this order has to be called off."
         );
       }
     }
 
-    // Once an order has shipped, the customer has to tell us what happened
-    // before we can close it either way. A rider closing the job is the one
-    // exception: they were standing at the door when it happened.
-    if (order.orderStatus === "shipped" && !order.customerResponse && !options.byRider) {
-      throw new ApiError(
-        400,
-        "Customer must respond before a shipped order can be delivered or cancelled"
-      );
-    }
-
-    // The customer already said it never arrived (or that they cancelled it),
-    // so marking it delivered would contradict them.
+    // The customer said the parcel never arrived, or that they called it off,
+    // so the store marking it delivered would contradict them. The rider is the
+    // exception on purpose: a code read at the door is newer and stronger than a
+    // report typed hours earlier, which is exactly what the report is for.
     if (
+      !options.byRider &&
       data.orderStatus === "delivered" &&
       (order.customerResponse === "not_received" || order.customerResponse === "cancelled")
     ) {
@@ -706,8 +746,9 @@ export async function updateOrderStatus(
       );
     }
 
-    // The other half of the same rule: once the customer confirms the parcel
-    // arrived, delivery is the only way to close a shipped order.
+    // Orders answered before the report stopped asking still carry "received".
+    // That answer says the parcel is in the customer's hands, so it cannot be
+    // cancelled afterwards.
     if (
       order.orderStatus === "shipped" &&
       data.orderStatus === "cancelled" &&
@@ -715,7 +756,7 @@ export async function updateOrderStatus(
     ) {
       throw new ApiError(
         400,
-        "The customer confirmed receipt, so this order can only be marked delivered"
+        "The customer already confirmed this order as received, so it can only be marked delivered"
       );
     }
 
@@ -745,7 +786,10 @@ export async function updateOrderStatus(
             history: {
               status: "cancelled",
               at: new Date(),
-              note: "Order cancelled by the store",
+              note:
+                order.customerResponse === "cancelled"
+                  ? "Order cancelled by the customer"
+                  : "Order cancelled by the store",
               by: changedBy ?? null,
             },
           },
@@ -806,13 +850,41 @@ export async function updateCustomerResponse(
 
   assertOwnerOrAdmin(order.userId, requester, "You are not authorized to respond to this order");
 
-  if (order.orderStatus !== "shipped") {
-    throw new ApiError(400, "Response can only be submitted when the order is shipped");
+  // The report is only worth making while the outcome is still open. Once the
+  // parcel has been handed over the sale is closed, and a cancelled order is
+  // history, so there is nothing left for the customer to tell us.
+  if (order.orderStatus === "delivered") {
+    throw new ApiError(
+      400,
+      "This order is already delivered, so there is nothing left to report"
+    );
+  }
+  if (order.orderStatus === "cancelled") {
+    throw new ApiError(400, "This order is already cancelled");
   }
 
-  // "Received" and "Cancelled" are the customer's final word, so they cannot be
-  // changed afterwards. "Not received" stays editable, because a late parcel can
-  // still be confirmed later.
+  // "Received" is not an answer anybody has to send any more: the rider closes
+  // the job with the code read at the door, which sets the order to delivered
+  // by itself. A confirmation from the customer would only ever repeat it.
+  if (data.response === "received") {
+    throw new ApiError(
+      400,
+      "Your rider confirms the hand-over with your delivery code, so you do not need to report the order as received"
+    );
+  }
+
+  // Nothing has gone out yet, so there is nothing to say has not arrived. A
+  // customer who changed their mind cancels instead.
+  if (data.response === "not_received" && order.orderStatus !== "shipped") {
+    throw new ApiError(
+      400,
+      "Only a shipped order can be reported as not received. Cancel this order if you changed your mind."
+    );
+  }
+
+  // A cancellation is the customer's final word, because the store acts on it.
+  // "Not received" stays editable: a late parcel can still be reported again.
+  // Orders that answered "received" before that option went away stay locked.
   const FINAL_RESPONSES = ["received", "cancelled"];
   if (order.customerResponse && FINAL_RESPONSES.includes(order.customerResponse)) {
     throw new ApiError(
@@ -835,12 +907,15 @@ export async function updateCustomerResponse(
   });
 
   // A cancellation is the one status change the admin did not make, so it gets
-  // its own line in the notification feed.
+  // its own line in the notification feed. The order is not cancelled yet: the
+  // store has to act on it, which is what the line has to say.
   if (data.response === "cancelled") {
     await recordActivity({
       type: "order_cancelled",
-      title: `Order ${shortOrderNumber(order._id)} cancelled by the customer`,
-      detail: data.note ? `Reason: ${data.note}` : "No reason given",
+      title: `Order ${shortOrderNumber(order._id)} cancellation requested`,
+      detail: data.note
+        ? `Reason: ${data.note}`
+        : "No reason given. Cancel the order to refund it, or the rider will deliver it.",
       ref: order._id.toString(),
     });
   }

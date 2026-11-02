@@ -34,6 +34,24 @@ export function isAllowedDeliveryTransition(from: string, to: string): boolean {
 }
 
 /**
+ * Whether a request has run out of its answer window.
+ *
+ * The sweep closes these rows, but the sweep runs on a schedule, so a request
+ * nobody answered can still look live in the database. Anything that enforces
+ * the one-claim-per-order rule has to read the clock itself instead of trusting
+ * the status, or a timed-out offer would hold an order hostage.
+ *
+ * Lives here rather than in the service because both the delivery module and the
+ * order module ask it, and the order module cannot import the delivery service
+ * without a cycle.
+ */
+export function isLapsedOffer(delivery: { status?: string; expiresAt?: any } | null): boolean {
+  if (!delivery || delivery.status !== "assigned") return false;
+  if (!delivery.expiresAt) return false;
+  return new Date(delivery.expiresAt).getTime() <= Date.now();
+}
+
+/**
  * The stage a rider's own button advances to. `delivered` is deliberately not
  * here: a hand-over is confirmed with the customer's delivery code instead, so
  * the rider cannot close a job at the door without meeting them.

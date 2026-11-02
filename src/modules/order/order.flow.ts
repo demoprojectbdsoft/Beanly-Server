@@ -2,15 +2,16 @@
  * The order status flow.
  *
  *   confirmed ──▶ processing ──▶ shipped ──▶ delivered
- *       │             │            │             │
- *       └─────────────┴────────────┴─────────────┴──▶ cancelled
+ *       │             │            │
+ *       └─────────────┴────────────┴──▶ cancelled
  *
  * Rules:
  * - An order only moves forward, one step at a time.
- * - "cancelled" can be reached from any stage, and has no way out: a refunded
- *   order can never be revived.
- * - "delivered → cancelled" is a return, and the service reverses everything
- *   the delivery had credited.
+ * - "cancelled" can be reached from any stage that has not been handed over,
+ *   and has no way out: a refunded order can never be revived.
+ * - "delivered" is closed too. The sale ended when the parcel changed hands, so
+ *   a later problem is a return or a refund, not a status that rewrites a
+ *   completed delivery.
  */
 export const ORDER_STATUSES = [
   "confirmed",
@@ -26,7 +27,7 @@ const NEXT_STATUSES: Record<OrderStatus, OrderStatus[]> = {
   confirmed: ["processing", "cancelled"],
   processing: ["shipped", "cancelled"],
   shipped: ["delivered", "cancelled"],
-  delivered: ["cancelled"],
+  delivered: [],
   cancelled: [],
 };
 

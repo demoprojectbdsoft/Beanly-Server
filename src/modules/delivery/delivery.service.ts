@@ -20,7 +20,7 @@ import {
   notifyCustomerDelivery,
   notifyRiderAssigned,
 } from "../activity/activity.notifications";
-import { nextDeliveryStatuses, nextRiderStep } from "./delivery.flow";
+import { nextDeliveryStatuses, nextRiderStep, isLapsedOffer } from "./delivery.flow";
 import { ensureOtp, markOtpUsed, verifyOtpCode } from "./delivery.otp";
 import {
   AdminDeliveryQuery,
@@ -158,21 +158,8 @@ function feeFor(order: any): number {
 }
 
 /**
- * Whether a request has run out of its answer window.
- *
- * The sweep closes these rows, but the sweep runs on a schedule, so a request
- * nobody answered can still look live in the database. The store cares about the
- * fact rather than the bookkeeping: an offer that timed out holds the order no
- * more than one the rider declined, so the window is checked wherever the
- * one-claim-per-order rule is enforced.
+ * How much of the answer window is left, for a message the store can act on.
  */
-function isLapsedOffer(delivery: { status?: string; expiresAt?: any } | null): boolean {
-  if (!delivery || delivery.status !== "assigned") return false;
-  if (!delivery.expiresAt) return false;
-  return new Date(delivery.expiresAt).getTime() <= Date.now();
-}
-
-/** How much of the answer window is left, for a message the store can act on. */
 function minutesLeft(expiresAt: any): number {
   return Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 60_000));
 }
