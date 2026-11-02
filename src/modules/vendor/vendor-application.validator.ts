@@ -12,12 +12,16 @@ import { BILLING_CYCLES, VENDOR_APPLICATION_STATUSES, VENDOR_PLAN_IDS } from "./
 const personalInfoSchema = z.object({
   fullName: z.string().trim().min(2, "Full name is required").max(120),
   email: z.string().trim().toLowerCase().email("A valid email is required"),
+  /**
+   * Required on submission, exactly as in the rider application: a store the
+   * review team cannot call cannot be onboarded, and buyers need a contact
+   * that reaches a person.
+   */
   phone: z
     .string()
     .trim()
-    .max(30)
-    .optional()
-    .default(""),
+    .min(6, "Enter a contact phone number")
+    .max(30, "Phone number is too long"),
   contactInfo: z.string().trim().max(200).optional().default(""),
 });
 

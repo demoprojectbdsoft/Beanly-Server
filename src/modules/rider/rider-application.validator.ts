@@ -18,7 +18,17 @@ import {
 const personalInfoSchema = z.object({
   fullName: z.string().trim().min(2, "Full name is required").max(120),
   email: z.string().trim().toLowerCase().email("A valid email is required"),
-  phone: z.string().trim().max(30).optional().default(""),
+  /**
+   * Required on submission. The wizard prefills it from the account, but an
+   * account can exist without a phone, and dispatch cannot reach a rider who
+   * has given no number — so the identity step asks for one before the last
+   * step is reachable. Drafts stay lenient (`saveRiderDraftSchema` partials it).
+   */
+  phone: z
+    .string()
+    .trim()
+    .min(6, "Enter a contact phone number")
+    .max(30, "Phone number is too long"),
   dateOfBirth: z.coerce.date().nullable().optional(),
   nationalId: z.string().trim().max(60).optional().default(""),
   photoUrl: z.string().trim().max(500).optional().default(""),
