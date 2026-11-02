@@ -11,6 +11,7 @@ import { User } from "../user/user.model";
 import { Order } from "../order/order.model";
 import { SiteSettings } from "../site-settings/site-settings.model";
 import { ApiError } from "../../utils/apiError";
+import { hasAnyRole, normalizeRole } from "../../utils/roles";
 import { updateOrderStatus } from "../order/order.service";
 import { syncVendorOrdersForDelivery } from "../vendor/vendor-order.create";
 import { recordActivity, notifyUser } from "../activity/activity.service";
@@ -154,6 +155,49 @@ async function requireRiderDelivery(riderId: string, id: string) {
 function feeFor(order: any): number {
   const shipping = Number(order?.shippingFee || 0);
   return shipping > 0 ? shipping : DEFAULT_DELIVERY_FEE;
+}
+
+/**
+ * Every account approved to ride.
+ *
+ * `role` is only the mirror of the dashboard the person is looking at right
+ * now, so a `{ role: "rider" }` query hides a rider who happens to be shopping
+ * as a customer, or who has not opened the rider workspace since approval. The
+ * authority lives in `roles`; the second branch covers a row the role migration
+ * has not filled yet, which still carries its single `role`.
+ */
+function riderAccountsFilter() {
+  return { $or: [{ roles: "rider" }, { roles: { $size: 0 }, role: "rider" }] };
+}
+
+/** Whether the rider's delivery access is parked by the store team. */
+function isRiderAccessParked(user: any): boolean {
+  const rows = Array.isArray(user?.roleSuspensions) ? user.roleSuspensions : [];
+  return rows.some((row: any) => normalizeRole(row?.role) === "rider");
+}
+
+/**
+ * The account behind a rider the store wants to hand a job to.
+ *
+ * Both store writes go through here so the answer cannot drift: the same three
+ * reasons the picker would refuse somebody are the three reasons the API will.
+ */
+async function requireRiderAccount(riderId: string) {
+  const rider: any = await User.findById(riderId)
+    .select("name role roles status roleSuspensions")
+    .lean();
+  if (!rider || !hasAnyRole(rider.roles, ["rider"], rider.role)) {
+    throw new ApiError(400, "That account is not a rider");
+  }
+  if (rider.status === "suspended") {
+    throw new ApiError(400, "That rider's account is suspended and cannot take deliveries");
+  }
+  // A parked rider keeps the role but loses the workspace, so an offer they can
+  // never open would only strand the parcel.
+  if (isRiderAccessParked(rider)) {
+    throw new ApiError(400, "That rider's delivery access is parked by the store");
+  }
+  return rider;
 }
 
 // ─── Rider overview ───────────────────────────────────────────────────────────
@@ -333,9 +377,76 @@ export async function getRiderDeliveries(riderId: string, query: GetRiderDeliver
   };
 }
 
-/** One job, for the rider's own detail view. */
+/**
+ * One job, for the rider's own detail view.
+ *
+ * The list rows only carry the copy a delivery needs at the door, so the detail
+ * read joins the order behind the job: the lines, the money the customer was
+ * charged, the payment method (a cash order is money the rider has to collect),
+ * the whole address with its postcode, and the store the parcel comes from.
+ */
 export async function getRiderDelivery(riderId: string, id: string) {
-  return toDto(await requireRiderDelivery(riderId, id));
+  const delivery = await requireRiderDelivery(riderId, id);
+
+  const [order, settings] = await Promise.all([
+    Order.findById(delivery.orderId)
+      .select(
+        "items subtotal shippingFee totalAmount shippingMethod shippingAddress paymentMethod orderStatus estimatedDelivery pointsDiscount pointsRedeemed couponCode couponDiscount createdAt"
+      )
+      .lean(),
+    SiteSettings.findOne().select("siteName address supportPhone supportEmail currency").lean(),
+  ]);
+
+  const dto = toDto(delivery);
+  if (!order) return { ...dto, order: null, pickup: null };
+
+  const total = Number(order.totalAmount || 0);
+  const paymentMethod = order.paymentMethod || "cod";
+
+  return {
+    ...dto,
+    order: {
+      _id: String(order._id),
+      orderNumber: dto.orderNumber,
+      placedAt: new Date(order.createdAt).toISOString(),
+      status: order.orderStatus,
+      estimatedDelivery: order.estimatedDelivery || "",
+      shippingMethod: order.shippingMethod || "standard",
+      paymentMethod,
+      // The one number the rider has to get right at the door.
+      amountToCollect: paymentMethod === "cod" ? total : 0,
+      address: {
+        fullName: order.shippingAddress?.fullName || delivery.customerName || "",
+        phone: order.shippingAddress?.phone || delivery.customerPhone || "",
+        address: order.shippingAddress?.address || "",
+        city: order.shippingAddress?.city || "",
+        postalCode: order.shippingAddress?.postalCode || "",
+      },
+      items: (order.items || []).map((item: any) => ({
+        title: item.title || "Item",
+        quantity: Number(item.quantity || 0),
+        price: Number(item.price || 0),
+        image: item.image || "",
+      })),
+      totals: {
+        subtotal: Number(order.subtotal || 0),
+        shipping: Number(order.shippingFee || 0),
+        // Both kinds of saving are merged into one line: the rider only needs to
+        // know the order was discounted, not which ledger paid for it.
+        discount: Number(order.pointsDiscount || 0) + Number(order.couponDiscount || 0),
+        couponCode: order.couponCode || "",
+        pointsRedeemed: Number(order.pointsRedeemed || 0),
+        total,
+      },
+    },
+    pickup: {
+      name: settings?.siteName || "Sparq store",
+      address: settings?.address || "",
+      phone: settings?.supportPhone || "",
+      email: settings?.supportEmail || "",
+      currency: settings?.currency || "USD",
+    },
+  };
 }
 
 /**
@@ -425,10 +536,14 @@ export async function getRiderInvoice(riderId: string, deliveryId: string) {
  * Offline riders are still listed, marked unavailable, because "nobody is
  * online" is more useful than an empty picker. `activeJobs` says how loaded
  * each one already is.
+ *
+ * The list is built from the approved `roles` array rather than `role`, because
+ * a rider who is currently on their customer dashboard is still a rider and the
+ * store must be able to see them.
  */
 export async function listAssignableRiders(orderId?: string) {
-  const riders = await User.find({ role: "rider" })
-    .select("name email phone image availability vehicleType vehicleNumber status")
+  const riders = await User.find(riderAccountsFilter())
+    .select("name email phone image availability vehicleType vehicleNumber status roleSuspensions")
     .lean();
 
   const ids = riders.map((r: any) => r._id);
@@ -458,7 +573,7 @@ export async function listAssignableRiders(orderId?: string) {
     riders: riders
       .map((rider: any) => {
         const availability = rider.availability === "offline" ? "offline" : "online";
-        const suspended = rider.status === "suspended";
+        const suspended = rider.status === "suspended" || isRiderAccessParked(rider);
         const activeJobs = activeMap.get(String(rider._id)) || 0;
         return {
           _id: String(rider._id),
@@ -580,13 +695,7 @@ export async function assignDelivery(input: AssignDeliveryInput, adminId?: strin
     throw new ApiError(400, `A ${order.orderStatus} order cannot be assigned to a rider`);
   }
 
-  const rider = await User.findById(input.riderId).select("role name availability status").lean();
-  if (!rider || (rider as any).role !== "rider") {
-    throw new ApiError(400, "That account is not a rider");
-  }
-  if ((rider as any).status === "suspended") {
-    throw new ApiError(400, "That rider's account is suspended and cannot take deliveries");
-  }
+  await requireRiderAccount(input.riderId);
 
   // One live job per order, whatever the order's own stage. A shipped order is
   // allowed here only when nothing is live: the parcel came back after a
@@ -679,13 +788,7 @@ export async function reassignDelivery(
     );
   }
 
-  const rider = await User.findById(input.riderId).select("role status").lean();
-  if (!rider || (rider as any).role !== "rider") {
-    throw new ApiError(400, "That account is not a rider");
-  }
-  if ((rider as any).status === "suspended") {
-    throw new ApiError(400, "That rider's account is suspended and cannot take deliveries");
-  }
+  await requireRiderAccount(input.riderId);
 
   if (String(current.riderId?._id ?? current.riderId) === input.riderId) {
     throw new ApiError(400, "That rider already has this delivery");
@@ -1127,7 +1230,7 @@ export async function getAdminDeliveryOverview() {
     Delivery.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
     Delivery.countDocuments({ status: "delivered", deliveredAt: { $gte: dayStart } }),
     User.aggregate([
-      { $match: { role: "rider" } },
+      { $match: riderAccountsFilter() },
       { $group: { _id: "$availability", count: { $sum: 1 } } },
     ]),
     Order.countDocuments({
