@@ -158,6 +158,50 @@ function feeFor(order: any): number {
 }
 
 /**
+ * Whether a request has run out of its answer window.
+ *
+ * The sweep closes these rows, but the sweep runs on a schedule, so a request
+ * nobody answered can still look live in the database. The store cares about the
+ * fact rather than the bookkeeping: an offer that timed out holds the order no
+ * more than one the rider declined, so the window is checked wherever the
+ * one-claim-per-order rule is enforced.
+ */
+function isLapsedOffer(delivery: { status?: string; expiresAt?: any } | null): boolean {
+  if (!delivery || delivery.status !== "assigned") return false;
+  if (!delivery.expiresAt) return false;
+  return new Date(delivery.expiresAt).getTime() <= Date.now();
+}
+
+/** How much of the answer window is left, for a message the store can act on. */
+function minutesLeft(expiresAt: any): number {
+  return Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 60_000));
+}
+
+/**
+ * Closes a request nobody answered, so the order is free for the next rider.
+ *
+ * The condition re-reads the row: if the rider accepted in the moment between
+ * the read and this write, nothing matches and an accepted job is left alone.
+ */
+async function closeLapsedOffer(deliveryId: string, adminId?: string) {
+  const now = new Date();
+  await Delivery.updateOne(
+    { _id: deliveryId, status: "assigned", expiresAt: { $lte: now } },
+    {
+      $set: { status: "cancelled", cancelledAt: now },
+      $push: {
+        history: {
+          status: "cancelled",
+          at: now,
+          note: "Request expired without an answer",
+          by: adminId ?? null,
+        },
+      },
+    }
+  );
+}
+
+/**
  * Every account approved to ride.
  *
  * `role` is only the mirror of the dashboard the person is looking at right
@@ -567,7 +611,7 @@ export async function listAssignableRiders(orderId?: string) {
           orderId: new Types.ObjectId(orderId),
           status: { $in: LIVE_DELIVERY_STATUSES },
         })
-          .select("riderId status")
+          .select("_id riderId status fee expiresAt createdAt")
           .lean()
       : null,
   ]);
@@ -605,10 +649,28 @@ export async function listAssignableRiders(orderId?: string) {
         return a.name.localeCompare(b.name);
       }),
     currentRiderId: live ? String(live.riderId) : null,
-    // The live job itself, so the picker knows whether it is handing over an
-    // unanswered offer or looking at work a rider already accepted.
+    // The live job itself, so the picker can name the rider holding this order,
+    // say how far the job got and quote the answer window back to the store.
+    // `expired` is part of the answer: a request that ran out of time is shown
+    // for context but no longer blocks a new rider.
     currentDelivery: live
-      ? { _id: String(live._id), status: live.status, riderId: String(live.riderId) }
+      ? {
+          _id: String(live._id),
+          status: live.status as DeliveryStatus,
+          riderId: String(live.riderId),
+          riderName:
+            riders.find((rider: any) => String(rider._id) === String(live.riderId))?.name ||
+            "the assigned rider",
+          fee: Number(live.fee || 0),
+          expiresAt: live.expiresAt ? new Date(live.expiresAt).toISOString() : null,
+          assignedAt: new Date(live.createdAt).toISOString(),
+          // The server owns the clock, so the picker is quoted a finished number
+          // instead of doing arithmetic while it renders. Only an unanswered
+          // request has an answer window; accepted work is past that question.
+          minutesLeft:
+            live.status === "assigned" && live.expiresAt ? minutesLeft(live.expiresAt) : 0,
+          expired: isLapsedOffer(live),
+        }
       : null,
   };
 }
@@ -709,12 +771,29 @@ export async function assignDelivery(input: AssignDeliveryInput, adminId?: strin
   const existing = await Delivery.findOne({
     orderId: order._id,
     status: { $in: LIVE_DELIVERY_STATUSES },
-  }).select("_id riderId");
+  })
+    .select("_id riderId status expiresAt")
+    .populate("riderId", "name")
+    .lean();
   if (existing) {
-    throw new ApiError(
-      order.orderStatus === "shipped" ? 400 : 409,
-      "This order already has a live delivery. Reassign it instead."
-    );
+    const holder = (existing.riderId as any)?.name || "the assigned rider";
+    if (!isLapsedOffer(existing)) {
+      // The order already has somebody's name on it, and that claim is the
+      // store's, the rider's and the customer's until it ends. Two riders cannot
+      // both be sent to one parcel, so the picker stays shut until the rider
+      // answers: a decline or an expired window frees the order on its own.
+      throw new ApiError(
+        order.orderStatus === "shipped" ? 400 : 409,
+        existing.status === "assigned"
+          ? `${holder} was offered this job and has ${minutesLeft(
+              existing.expiresAt
+            )} minute(s) left to answer. Assign another rider once they decline or the request expires, or cancel this delivery first.`
+          : `${holder} has accepted this delivery and is working on it. Cancel the delivery first if it must go to another rider.`
+      );
+    }
+    // Nobody answered in time, so this row is history: close it before the new
+    // request is written, so the order never carries two claims at once.
+    await closeLapsedOffer(String(existing._id), adminId);
   }
 
   const delivery = await createAssignment({
@@ -776,20 +855,29 @@ export async function assignDelivery(input: AssignDeliveryInput, adminId?: strin
   return toDto(populated);
 }
 
-/** Stops a job and hands the same order to somebody else. */
+/**
+ * Stops a request nobody answered and hands the same order to somebody else.
+ *
+ * Only an expired request qualifies. An offer still inside its window belongs to
+ * the rider it was sent to, and a job they accepted belongs to them outright:
+ * moving either one behind their back would leave a rider holding a parcel that
+ * is suddenly someone else's, so the store cancels those instead and everybody is
+ * told the delivery stopped.
+ */
 export async function reassignDelivery(
   deliveryId: string,
   input: ReassignDeliveryInput,
   adminId?: string
 ) {
   const current = await requireDelivery(deliveryId);
-  // Only an unanswered offer can be handed on. Once the rider accepts, the job
-  // is theirs: the store can watch it, but not quietly move it to somebody else.
-  if (current.status !== "assigned") {
+  if (current.status !== "assigned" || !isLapsedOffer(current)) {
+    const holder = (current.riderId as any)?.name || "the assigned rider";
     throw new ApiError(
       400,
       LIVE_DELIVERY_STATUSES.includes(current.status as DeliveryStatus)
-        ? "The rider has already accepted this delivery. Ask them to cancel it from their dashboard if it cannot go ahead."
+        ? current.status === "assigned"
+          ? `${holder} still has ${minutesLeft(current.expiresAt)} minute(s) to answer this request. Wait for their answer, or cancel the delivery to pick another rider now.`
+          : `${holder} has accepted this delivery. Cancel it first if it cannot go ahead — accepted work is not handed over behind a rider's back.`
         : "This delivery is finished and cannot be reassigned"
     );
   }
@@ -803,8 +891,8 @@ export async function reassignDelivery(
   const order = await Order.findById(current.orderId);
   if (!order) throw new ApiError(404, "Order not found");
 
-  // Close the old offer first: the one-live-job index would otherwise reject
-  // the replacement.
+  // Close the lapsed offer first: a second request on the same order would
+  // otherwise sit beside one that is still technically live.
   await Delivery.updateOne(
     { _id: current._id },
     {
@@ -817,7 +905,7 @@ export async function reassignDelivery(
         history: {
           status: "cancelled",
           at: new Date(),
-          note: `Reassigned${input.note ? `: ${input.note}` : ""}`,
+          note: `Reassigned after the request expired${input.note ? `: ${input.note}` : ""}`,
           by: adminId ?? null,
         },
       },
