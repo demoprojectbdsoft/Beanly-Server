@@ -163,11 +163,17 @@ function feeFor(order: any): number {
  * `role` is only the mirror of the dashboard the person is looking at right
  * now, so a `{ role: "rider" }` query hides a rider who happens to be shopping
  * as a customer, or who has not opened the rider workspace since approval. The
- * authority lives in `roles`; the second branch covers a row the role migration
- * has not filled yet, which still carries its single `role`.
+ * authority lives in `roles`.
+ *
+ * The second branch is the safety net for a row the role migration never
+ * reached. It asks for `role` on its own rather than for an empty `roles`,
+ * because `$size` only matches documents that actually hold an array — a row
+ * from before the field exists has no `roles` at all, and a `$size: 0` clause
+ * would walk straight past it. Nothing over-matches: `role` is only ever the
+ * mirror of a dashboard the account was granted.
  */
 function riderAccountsFilter() {
-  return { $or: [{ roles: "rider" }, { roles: { $size: 0 }, role: "rider" }] };
+  return { $or: [{ roles: "rider" }, { role: "rider" }] };
 }
 
 /** Whether the rider's delivery access is parked by the store team. */
