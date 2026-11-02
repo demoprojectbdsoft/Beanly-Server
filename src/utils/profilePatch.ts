@@ -26,6 +26,17 @@
  */
 export function sameValue(before: unknown, after: unknown): boolean {
   if (before instanceof Date && after instanceof Date) return before.getTime() === after.getTime();
+  // The file holds a Date, the picker writes `YYYY-MM-DD` text. Read as the
+  // same instant, an untouched birthday is not an edit that deserves a history
+  // line; compared as text it would rewrite the row on every single save.
+  if (
+    before instanceof Date &&
+    (typeof after === "string" || typeof after === "number") &&
+    String(after).trim() !== ""
+  ) {
+    const asDate = new Date(after);
+    return !isNaN(asDate.getTime()) && before.getTime() === asDate.getTime();
+  }
   if (Array.isArray(before) && Array.isArray(after)) {
     return before.length === after.length && before.every((item, index) => item === after[index]);
   }
