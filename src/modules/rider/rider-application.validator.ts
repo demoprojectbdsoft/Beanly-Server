@@ -135,6 +135,105 @@ export const saveRiderDraftSchema = z
   })
   .passthrough();
 
+/**
+ * The rider's own profile edits.
+ *
+ * A submission has to be complete to be reviewed, so `createRiderApplicationSchema`
+ * is strict. The profile page is the opposite case: a rider fixes one section,
+ * leaves a document they no longer hold blank, and saves. So every field here is
+ * optional, keeps the same ceilings and enums as the submission, and asks for
+ * nothing. Unfilled is a legal state — that is what the page is showing.
+ *
+ * A date arrives as the `YYYY-MM-DD` text the picker writes, or `null` when the
+ * rider clears the field. An empty string means the same as `null`: a form that
+ * was never touched, not a date in 1970.
+ */
+const editableDate = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? null : value),
+  z.coerce.date().nullable().optional()
+);
+
+const editPersonalInfoSchema = z.object({
+  fullName: z.string().trim().max(120).optional(),
+  /** The login email is not written here, but a typed one is still checked. */
+  email: z.string().trim().toLowerCase().email("A valid email is required").optional(),
+  phone: z.string().trim().max(30).optional(),
+  dateOfBirth: editableDate,
+  nationalId: z.string().trim().max(60).optional(),
+  photoUrl: z.string().trim().max(500).optional(),
+});
+
+const editContactInfoSchema = z.object({
+  emergencyContactName: z.string().trim().max(120).optional(),
+  emergencyContactPhone: z.string().trim().max(30).optional(),
+  preferredContact: z.enum(["phone", "email", "whatsapp"]).optional(),
+});
+
+const editServiceAddressSchema = z.object({
+  country: z.string().trim().max(80).optional(),
+  division: z.string().trim().max(80).optional(),
+  city: z.string().trim().max(80).optional(),
+  area: z.string().trim().max(120).optional(),
+  address: z.string().trim().max(400).optional(),
+  postalCode: z.string().trim().max(20).optional(),
+  latitude: z.coerce.number().min(-90).max(90).nullable().optional(),
+  longitude: z.coerce.number().min(-180).max(180).nullable().optional(),
+});
+
+const editVehicleSchema = z.object({
+  type: z.enum(RIDER_VEHICLE_TYPES as unknown as [string, ...string[]]).optional(),
+  number: z.string().trim().max(40).optional(),
+  licenseNumber: z.string().trim().max(60).optional(),
+  licenseExpiry: editableDate,
+  hasOwnVehicle: z.boolean().optional(),
+});
+
+const editDocumentsSchema = z.object({
+  drivingLicenseUrl: z.string().trim().max(500).optional(),
+  nationalIdUrl: z.string().trim().max(500).optional(),
+  vehicleDocsUrl: z.string().trim().max(500).optional(),
+  otherUrl: z.string().trim().max(500).optional(),
+  notes: z.string().trim().max(2000).optional(),
+});
+
+const editAvailabilitySchema = z.object({
+  days: z.array(z.enum(RIDER_WEEK_DAYS as unknown as [string, ...string[]])).optional(),
+  slots: z.array(z.enum(RIDER_TIME_SLOTS as unknown as [string, ...string[]])).optional(),
+  maxDistanceKm: z.coerce.number().int().nonnegative().max(200).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+
+const editExperienceSchema = z.object({
+  years: z.coerce.number().int().nonnegative().max(60).optional(),
+  previousPlatforms: z.string().trim().max(300).optional(),
+  note: z.string().trim().max(1000).optional(),
+});
+
+/** Every section the profile page may write, in the order the file shows them. */
+export const PROFILE_SECTIONS = [
+  "personalInfo",
+  "contactInfo",
+  "serviceAddress",
+  "vehicle",
+  "documents",
+  "availability",
+  "experience",
+] as const;
+
+export const updateMyRiderApplicationSchema = z
+  .object({
+    personalInfo: editPersonalInfoSchema.optional(),
+    contactInfo: editContactInfoSchema.optional(),
+    serviceAddress: editServiceAddressSchema.optional(),
+    vehicle: editVehicleSchema.optional(),
+    documents: editDocumentsSchema.optional(),
+    availability: editAvailabilitySchema.optional(),
+    experience: editExperienceSchema.optional(),
+  })
+  .refine((value) => PROFILE_SECTIONS.some((section) => value[section] !== undefined), {
+    message: "Nothing to update",
+  });
+
 export const reviewRiderApplicationSchema = z
   .object({
     action: z.enum(["under_review", "approve", "reject"]),
@@ -159,5 +258,6 @@ export const riderStatusLookupSchema = z.object({
 
 export type CreateRiderApplicationInput = z.infer<typeof createRiderApplicationSchema>;
 export type SaveRiderDraftInput = z.infer<typeof saveRiderDraftSchema>;
+export type UpdateMyRiderApplicationInput = z.infer<typeof updateMyRiderApplicationSchema>;
 export type ReviewRiderApplicationInput = z.infer<typeof reviewRiderApplicationSchema>;
 export type RiderApplicationQuery = z.infer<typeof riderApplicationQuerySchema>;

@@ -1,16 +1,25 @@
 import { randomUUID } from "crypto";
 import { Types } from "mongoose";
 import { ApiError } from "../../utils/apiError";
+import { applySection } from "../../utils/profilePatch";
 import { withTransaction } from "../../utils/transactions";
 import { User } from "../user/user.model";
 import { VendorApplication } from "./vendor-application.model";
 import { VendorStore } from "./vendor-store.model";
+import { updateMyStore } from "./vendor-store.service";
 import { SubscriptionTransaction, VendorSubscription } from "./vendor-subscription.model";
 import { notifyAdminVendorApplication, notifyVendorApplication } from "./vendor.notifications";
 import { getPlan } from "./vendor-plan.service";
 import { billingDays } from "./vendor.types";
 import { normalizeRoles } from "../../utils/roles";
-import type { CreateApplicationInput, ReviewApplicationInput, VendorApplicationQuery } from "./vendor-application.validator";
+import { APPLICATION_SECTIONS } from "./vendor-application.validator";
+import type { UpdateStoreInput } from "./vendor-store.validator";
+import type {
+  CreateApplicationInput,
+  ReviewApplicationInput,
+  UpdateMyApplicationInput,
+  VendorApplicationQuery,
+} from "./vendor-application.validator";
 
 /**
  * The application lifecycle, start to finish.
@@ -240,6 +249,90 @@ export async function submitApplication(userId: string, input: CreateApplication
 /** The account's current application, or null when it never applied. */
 export async function getMyApplication(userId: string) {
   const application: any = await VendorApplication.findOne({ userId }).sort({ createdAt: -1 }).lean();
+  return toApplicationDto(application);
+}
+
+/**
+ * The seller's own edit of their file.
+ *
+ * The vendor profile page shows the whole application — who applied, how the
+ * shop presents itself, where the business sits, what was uploaded for
+ * verification — filled or not, and lets it be corrected. One Save therefore
+ * writes three places at once, because they are one answer kept in three rows:
+ *
+ * - the application row keeps the record the review desk read,
+ * - the store row is what buyers actually see, so the storefront fields are
+ *   copied onto it,
+ * - the account keeps its display name and phone.
+ *
+ * What is deliberately not editable here: the slug, because every published link
+ * to the shop is built from it, and the plan and billing cycle, because a plan
+ * is a paid change and the subscription desk is the only place that may take
+ * money for one. A closed shop stays closed — its owner fixing a phone number
+ * must not quietly rewrite a storefront the store team switched off.
+ *
+ * The status never moves on this path: an edit is not a resubmission.
+ */
+export async function updateMyApplication(userId: string, input: UpdateMyApplicationInput) {
+  const application: any = await VendorApplication.findOne({ userId }).sort({ createdAt: -1 });
+  if (!application) throw new ApiError(404, "You have no vendor file to edit");
+
+  const name = input.storeInfo?.name?.trim();
+  if (name !== undefined && name.length > 0 && name.length < 2) {
+    throw new ApiError(400, "Store name needs at least two characters");
+  }
+
+  // A renamed shop must not collide with someone else's. Asked before anything
+  // is written, so a refused name leaves the file exactly as it was. The slug
+  // the store was published under does not change, so the identity check the
+  // submission uses can answer for the name alone.
+  if (name && name !== application.storeInfo?.name) {
+    await assertStoreIdentityFree(application.storeInfo?.slug || name, name, userId);
+  }
+
+  let changed = false;
+  for (const section of APPLICATION_SECTIONS) {
+    changed = applySection(application, section, input[section]) || changed;
+  }
+
+  if (changed) {
+    application.history.push({
+      status: application.status,
+      at: new Date(),
+      note: "Profile updated by the seller",
+    });
+    await application.save();
+  }
+
+  const store = await VendorStore.findOne({ userId });
+  if (store && store.status !== "closed") {
+    const patch: UpdateStoreInput = { ...(input.storeInfo || {}) };
+    if (input.businessAddress) {
+      // The storefront address keeps a value for every line, so an unfilled part
+      // of the file is written as the empty string the store row already uses
+      // rather than as `undefined`, which would leave the old text on screen.
+      patch.address = {
+        country: input.businessAddress.country || "Bangladesh",
+        division: input.businessAddress.division || "",
+        city: input.businessAddress.city || "",
+        area: input.businessAddress.area || "",
+        address: input.businessAddress.address || "",
+        postalCode: input.businessAddress.postalCode || "",
+        latitude: input.businessAddress.latitude ?? null,
+        longitude: input.businessAddress.longitude ?? null,
+      };
+    }
+    if (input.isVisible !== undefined) patch.isVisible = input.isVisible;
+    if (Object.keys(patch).length > 0) await updateMyStore(userId, patch);
+  }
+
+  const mirror: Record<string, unknown> = {};
+  if (input.personalInfo?.fullName) mirror.name = input.personalInfo.fullName;
+  if (input.personalInfo?.phone !== undefined) mirror.phone = input.personalInfo.phone;
+  if (Object.keys(mirror).length > 0) {
+    await User.updateOne({ _id: userId }, { $set: mirror });
+  }
+
   return toApplicationDto(application);
 }
 

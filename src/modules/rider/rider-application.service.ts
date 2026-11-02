@@ -1,15 +1,18 @@
 import { randomUUID } from "crypto";
 import { Types } from "mongoose";
 import { ApiError } from "../../utils/apiError";
+import { applySection } from "../../utils/profilePatch";
 import { withTransaction } from "../../utils/transactions";
 import { normalizeRoles } from "../../utils/roles";
 import { User } from "../user/user.model";
 import { RiderApplication } from "./rider-application.model";
+import { PROFILE_SECTIONS } from "./rider-application.validator";
 import { notifyAdminRiderApplication, notifyRiderApplication } from "./rider.notifications";
 import type {
   CreateRiderApplicationInput,
   ReviewRiderApplicationInput,
   RiderApplicationQuery,
+  UpdateMyRiderApplicationInput,
 } from "./rider-application.validator";
 
 /**
@@ -191,6 +194,96 @@ export async function getMyApplication(userId: string) {
   const application: any = await RiderApplication.findOne({ userId })
     .sort({ createdAt: -1 })
     .lean();
+  return toRiderApplicationDto(application);
+}
+
+/**
+ * The rider's own edit of their file.
+ *
+ * The profile page is the rider's copy of everything the application wizard
+ * collected, so an approved rider keeps editing it — a new plate, a renewed
+ * licence, a better photo — without reopening the review. Two things happen in
+ * one call: the application row keeps the record, and the identity and vehicle
+ * fields are mirrored onto the account, because the rider dashboard, the
+ * delivery job and the customer's tracking screen have always read them from
+ * the user row.
+ *
+ * The service does not know which fields the form considers finished, so it
+ * accepts a half-empty save. The application itself stays where it was: this
+ * path never changes a status or reopens a decision.
+ *
+ * A rider whose account was handed the role without a wizard run has no file at
+ * all. The profile page is then the only place those answers can live, so the
+ * row is opened here rather than sent to a dead end.
+ */
+export async function updateMyApplication(
+  userId: string,
+  input: UpdateMyRiderApplicationInput
+) {
+  let application: any = await RiderApplication.findOne({ userId }).sort({ createdAt: -1 });
+  let openedHere = false;
+
+  if (!application) {
+    // A rider approved at the review desk always has the file the wizard wrote.
+    // An account handed the role another way — a courier added at a desk, a
+    // legacy row — has none, and the profile page would have nowhere to save.
+    // So the file is opened from the account here and the history says so.
+    const user = await loadApplicant(userId);
+    const held = normalizeRoles(user.roles);
+    const pool = held.length > 0 ? held : normalizeRoles(user.role || "customer");
+    if (!pool.includes("rider") && user.riderStatus !== "approved") {
+      throw new ApiError(404, "You have no rider file yet. Apply from the rider page first.");
+    }
+
+    application = new RiderApplication({
+      userId,
+      reference: newReference(),
+      status: "approved",
+      personalInfo: { fullName: user.name || "Rider", email: user.email || "", phone: user.phone || "" },
+      serviceAddress: {},
+      vehicle: {},
+      history: [
+        { status: "approved", at: new Date(), note: "Opened from the rider profile page" },
+      ],
+    });
+    openedHere = true;
+  }
+
+  let changed = false;
+  for (const section of PROFILE_SECTIONS) {
+    changed = applySection(application, section, input[section]) || changed;
+  }
+
+  if (changed && !openedHere) {
+    application.history.push({
+      status: application.status,
+      at: new Date(),
+      note: "Profile updated by the rider",
+    });
+  }
+
+  if (changed || openedHere) await application.save();
+
+  // The account mirror. Only the sections that were part of this save are
+  // copied, and the login email is never written from here.
+  const mirror: Record<string, unknown> = {};
+  if (input.personalInfo) {
+    if (input.personalInfo.fullName) mirror.name = input.personalInfo.fullName;
+    if (input.personalInfo.photoUrl !== undefined) mirror.image = input.personalInfo.photoUrl;
+    if (input.personalInfo.phone !== undefined) mirror.phone = input.personalInfo.phone;
+  }
+  if (input.vehicle) {
+    if (input.vehicle.type !== undefined) mirror.vehicleType = input.vehicle.type;
+    if (input.vehicle.number !== undefined) mirror.vehicleNumber = input.vehicle.number;
+    if (input.vehicle.licenseNumber !== undefined) {
+      mirror.licenseNumber = input.vehicle.licenseNumber;
+    }
+  }
+
+  if (Object.keys(mirror).length > 0) {
+    await User.updateOne({ _id: userId }, { $set: mirror });
+  }
+
   return toRiderApplicationDto(application);
 }
 

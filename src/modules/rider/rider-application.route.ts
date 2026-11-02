@@ -4,6 +4,7 @@ import {
   createRiderApplicationSchema,
   riderStatusLookupSchema,
   reviewRiderApplicationSchema,
+  updateMyRiderApplicationSchema,
 } from "./rider-application.validator";
 import * as controller from "./rider-application.controller";
 import { requireAuth } from "../../middlewares/auth.middleware";
@@ -27,6 +28,15 @@ router.post(
 
 // ─── Applicant ────────────────────────────────────────────────────────────────
 router.get("/mine", requireAuth, controller.getMyApplication);
+// The rider's own profile page writes the same file the wizard created. It is
+// not admin-only: a renewed licence has to be fixable without a support ticket,
+// and the service only ever touches the row that belongs to the token.
+router.patch(
+  "/mine",
+  requireAuth,
+  validate(updateMyRiderApplicationSchema),
+  controller.updateMyApplication
+);
 router.post("/mine/cancel", requireAuth, controller.cancelMyApplication);
 router.post(
   "/",

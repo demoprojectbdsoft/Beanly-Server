@@ -93,6 +93,83 @@ export const createApplicationSchema = z.object({
   billingCycle: z.enum(BILLING_CYCLES).default("monthly"),
 });
 
+/**
+ * The vendor's own edit of their file.
+ *
+ * The submission must be complete to be reviewed; the profile page is the
+ * opposite case — the seller corrects one thing at a time and saves, so every
+ * field here is optional while keeping the ceilings and the enums of the
+ * submission schema.
+ *
+ * Two deliberate absences. `storeInfo.slug` is not editable, because every
+ * published link to the shop is built from it. And `selectedPlan` /
+ * `billingCycle` are not editable here either: a plan is a paid change, and the
+ * subscription desk is the only place that may take money for one.
+ *
+ * `isVisible` is a storefront switch rather than an application answer, but the
+ * profile page is the one form a seller fills, so it rides along and is written
+ * straight to the store row.
+ */
+const editPersonalInfoSchema = z.object({
+  fullName: z.string().trim().max(120).optional(),
+  /** The login email is not written from here, but a typed one is still checked. */
+  email: z.string().trim().toLowerCase().email("A valid email is required").optional(),
+  phone: z.string().trim().max(30).optional(),
+  contactInfo: z.string().trim().max(200).optional(),
+});
+
+const editStoreInfoSchema = z.object({
+  name: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(2000).optional(),
+  logo: z.string().trim().max(500).optional(),
+  coverImage: z.string().trim().max(500).optional(),
+  email: z.string().trim().max(200).optional(),
+  phone: z.string().trim().max(30).optional(),
+  category: z.string().trim().max(80).optional(),
+  website: z.string().trim().max(300).optional(),
+  socialLinks: socialLinksSchema.optional(),
+});
+
+const editBusinessAddressSchema = z.object({
+  country: z.string().trim().max(80).optional(),
+  division: z.string().trim().max(80).optional(),
+  city: z.string().trim().max(80).optional(),
+  area: z.string().trim().max(120).optional(),
+  address: z.string().trim().max(400).optional(),
+  postalCode: z.string().trim().max(20).optional(),
+  latitude: z.coerce.number().min(-90).max(90).nullable().optional(),
+  longitude: z.coerce.number().min(-180).max(180).nullable().optional(),
+});
+
+const editVerificationSchema = z.object({
+  businessType: z.string().trim().max(80).optional(),
+  registrationNumber: z.string().trim().max(120).optional(),
+  documentUrl: z.string().trim().max(500).optional(),
+  notes: z.string().trim().max(2000).optional(),
+});
+
+export const APPLICATION_SECTIONS = [
+  "personalInfo",
+  "storeInfo",
+  "businessAddress",
+  "verification",
+] as const;
+
+export const updateMyApplicationSchema = z
+  .object({
+    personalInfo: editPersonalInfoSchema.optional(),
+    storeInfo: editStoreInfoSchema.optional(),
+    businessAddress: editBusinessAddressSchema.optional(),
+    verification: editVerificationSchema.optional(),
+    isVisible: z.boolean().optional(),
+  })
+  .refine(
+    (value) =>
+      APPLICATION_SECTIONS.some((section) => value[section] !== undefined) ||
+      value.isVisible !== undefined,
+    { message: "Nothing to update" }
+  );
+
 export const reviewApplicationSchema = z
   .object({
     action: z.enum(["under_review", "approve", "reject"]),
@@ -117,5 +194,6 @@ export const applicationStatusLookupSchema = z.object({
 });
 
 export type CreateApplicationInput = z.infer<typeof createApplicationSchema>;
+export type UpdateMyApplicationInput = z.infer<typeof updateMyApplicationSchema>;
 export type ReviewApplicationInput = z.infer<typeof reviewApplicationSchema>;
 export type VendorApplicationQuery = z.infer<typeof applicationQuerySchema>;

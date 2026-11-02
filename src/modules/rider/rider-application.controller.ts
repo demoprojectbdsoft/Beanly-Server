@@ -28,6 +28,12 @@ export const cancelMyApplication = catchAsync(async (req, res) => {
   apiResponse(res, 200, application, "Application withdrawn");
 });
 
+/** The rider's own edit of the file the wizard filled in. */
+export const updateMyApplication = catchAsync(async (req, res) => {
+  const application = await riderApplicationService.updateMyApplication(req.user!.id, req.body);
+  apiResponse(res, 200, application, "Profile updated");
+});
+
 /**
  * The status of an application whose owner has just proved their password.
  *

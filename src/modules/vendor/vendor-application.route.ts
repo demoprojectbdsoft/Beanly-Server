@@ -4,6 +4,7 @@ import {
   applicationStatusLookupSchema,
   createApplicationSchema,
   reviewApplicationSchema,
+  updateMyApplicationSchema,
 } from "./vendor-application.validator";
 import * as controller from "./vendor-application.controller";
 import { requireAuth } from "../../middlewares/auth.middleware";
@@ -28,6 +29,15 @@ router.post(
 
 // ─── Applicant ────────────────────────────────────────────────────────────────
 router.get("/mine", requireAuth, controller.getMyApplication);
+// The seller's profile page writes the file the wizard created and keeps the
+// storefront row in step. The row is found from the token, so there is no path
+// here to another seller's shop, and the slug and the plan stay out of reach.
+router.patch(
+  "/mine",
+  requireAuth,
+  validate(updateMyApplicationSchema),
+  controller.updateMyApplication
+);
 router.post("/mine/cancel", requireAuth, controller.cancelMyApplication);
 router.post(
   "/",
