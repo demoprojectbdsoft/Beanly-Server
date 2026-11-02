@@ -86,7 +86,14 @@ const deliverySchema = new Schema(
     orderTotal: { type: Number, default: 0 },
 
     // What the rider is paid for this job, and what the shop charges for it.
+    // A job that reaches `delivered` has paid its fee: the amount is booked at
+    // the moment the hand-over is confirmed, by whichever of the two confirms
+    // it. `feePaidVia` says who that was, which is the difference between the
+    // rider reading the code at the door and the customer confirming the parcel
+    // arrived themselves. Rows closed before that rule was written say nothing,
+    // and are read as the code path, which is what closed them.
     fee: { type: Number, default: 0 },
+    feePaidVia: { type: String, enum: ["code", "customer", null], default: null },
     distanceKm: { type: Number, default: null },
 
     // A decline says why, so the store can fix the cause instead of guessing.

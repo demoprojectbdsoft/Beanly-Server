@@ -8,6 +8,7 @@ import * as deliveryTracking from "./delivery.tracking";
 import { ensureOtp, getCustomerOtp } from "./delivery.otp";
 import {
   adminDeliveryQuerySchema,
+  adminPayoutsQuerySchema,
   getRiderDeliveriesQuerySchema,
   riderStatsQuerySchema,
 } from "./delivery.validator";
@@ -136,6 +137,17 @@ export const getAllDeliveries = catchAsync(async (req, res) => {
 export const getDeliveryOverview = catchAsync(async (_req, res) => {
   const result = await deliveryService.getAdminDeliveryOverview();
   apiResponse(res, 200, result, "Delivery overview fetched successfully");
+});
+
+/**
+ * The payout record: every fee a delivered job paid to a rider, folded into a
+ * graph and listed row by row. The store reads its own profit out of it, so it
+ * is an admin route and it never takes a rider id from the caller as a favour.
+ */
+export const getRiderPayouts = catchAsync(async (req, res) => {
+  const query = parseQuery(adminPayoutsQuerySchema, req.query);
+  const result = await deliveryService.getAdminPayouts(query);
+  apiResponse(res, 200, result, "Rider payouts fetched successfully");
 });
 
 export const getOrderDeliveries = catchAsync(async (req, res) => {

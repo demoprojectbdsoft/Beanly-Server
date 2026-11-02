@@ -17,12 +17,16 @@ import {
   IssuedWarranty,
   notifyWarrantiesIssued,
 } from "../warranty/warranty.notifications";
-import { recordActivity } from "../activity/activity.service";
+import { recordActivity, notifyUser } from "../activity/activity.service";
 import {
   notifyOrderPlaced,
   notifyOrderStatusChanged,
 } from "../activity/activity.notifications";
-import { Delivery, LIVE_DELIVERY_STATUSES } from "../delivery/delivery.model";
+import {
+  Delivery,
+  ACTIVE_DELIVERY_STATUSES,
+  LIVE_DELIVERY_STATUSES,
+} from "../delivery/delivery.model";
 import { isLapsedOffer } from "../delivery/delivery.flow";
 import { createVendorOrdersForOrder, syncVendorOrdersForParentStatus } from "../vendor/vendor-order.create";
 import {
@@ -640,10 +644,15 @@ export async function updateOrderStatus(
   data: UpdateOrderStatusInput,
   changedBy?: string,
   /**
-   * A rider closing a delivery is itself the confirmation that the parcel
-   * arrived, so the customer-response gate does not apply to that one caller.
+   * Who is behind this change, and what that lets it past the two closing gates.
+   *
+   * `byRider` is the code read at the door. `byCustomer` is the customer saying
+   * the parcel arrived, which is the same fact from the other side of the
+   * counter. Both are confirmations of a hand-over, so neither is held back by a
+   * rider still carrying the job or by an older report from the buyer; an admin
+   * changing the stage gets neither, and has to deal with whoever is on the job.
    */
-  options: { byRider?: boolean } = {}
+  options: { byRider?: boolean; byCustomer?: boolean } = {}
 ) {
   // Warranty confirmations are collected inside the transaction but only sent
   // after it commits, so a rolled-back delivery never announces coverage that
@@ -710,6 +719,7 @@ export async function updateOrderStatus(
     // holding the order open.
     if (
       !options.byRider &&
+      !options.byCustomer &&
       (data.orderStatus === "delivered" || data.orderStatus === "cancelled") &&
       !(data.orderStatus === "cancelled" && order.customerResponse === "cancelled")
     ) {
@@ -732,11 +742,13 @@ export async function updateOrderStatus(
     }
 
     // The customer said the parcel never arrived, or that they called it off,
-    // so the store marking it delivered would contradict them. The rider is the
-    // exception on purpose: a code read at the door is newer and stronger than a
-    // report typed hours earlier, which is exactly what the report is for.
+    // so the store marking it delivered would contradict them. A rider with the
+    // code and a customer confirming the hand-over are the exceptions on
+    // purpose: each is the buyer's own answer, newer than a report typed hours
+    // earlier, which is exactly what the report is for.
     if (
       !options.byRider &&
+      !options.byCustomer &&
       data.orderStatus === "delivered" &&
       (order.customerResponse === "not_received" || order.customerResponse === "cancelled")
     ) {
@@ -840,6 +852,22 @@ export async function updateOrderStatus(
 
 // ─── Customer Order Response ───────────────────────────────────────────────────
 
+/**
+ * What the customer says about an order, and how long they may keep saying it.
+ *
+ * Three answers: not received yet, cancelled, and received. None of them is
+ * final on its own, because a parcel reported missing can still turn up and a
+ * hand-over described in the moment can be corrected the next day. The report
+ * stays open through delivery and after it, and closes only when the order
+ * itself is called off and refunded — after that there is no outcome left to
+ * describe, and the conversation belongs to support.
+ *
+ * "Received" is the customer's own version of reading the code at the door, so
+ * it does what the code does: the order settles, the rider's job closes, and the
+ * fee the store set on that job is booked as paid. It is the one answer with
+ * side effects, which is why it cannot be given while the parcel is still on the
+ * shelf — nobody can confirm the arrival of something that has not left.
+ */
 export async function updateCustomerResponse(
   id: string,
   data: CustomerResponseInput,
@@ -850,48 +878,22 @@ export async function updateCustomerResponse(
 
   assertOwnerOrAdmin(order.userId, requester, "You are not authorized to respond to this order");
 
-  // The report is only worth making while the outcome is still open. Once the
-  // parcel has been handed over the sale is closed, and a cancelled order is
-  // history, so there is nothing left for the customer to tell us.
-  if (order.orderStatus === "delivered") {
-    throw new ApiError(
-      400,
-      "This order is already delivered, so there is nothing left to report"
-    );
-  }
+  // A cancelled order has been refunded and written off. Nothing the buyer says
+  // afterwards can reopen it.
   if (order.orderStatus === "cancelled") {
     throw new ApiError(400, "This order is already cancelled");
   }
 
-  // "Received" is not an answer anybody has to send any more: the rider closes
-  // the job with the code read at the door, which sets the order to delivered
-  // by itself. A confirmation from the customer would only ever repeat it.
-  if (data.response === "received") {
-    throw new ApiError(
-      400,
-      "Your rider confirms the hand-over with your delivery code, so you do not need to report the order as received"
-    );
-  }
+  const wasDelivered = order.orderStatus === "delivered";
+  const leftTheStore = wasDelivered || order.orderStatus === "shipped";
 
-  // Nothing has gone out yet, so there is nothing to say has not arrived. A
-  // customer who changed their mind cancels instead.
-  if (data.response === "not_received" && order.orderStatus !== "shipped") {
+  // Both answers about the parcel describe something that has left the store, so
+  // neither can be given while it is still being packed. Somebody who changed
+  // their mind before that cancels instead.
+  if (data.response !== "cancelled" && !leftTheStore) {
     throw new ApiError(
       400,
-      "Only a shipped order can be reported as not received. Cancel this order if you changed your mind."
-    );
-  }
-
-  // A cancellation is the customer's final word, because the store acts on it.
-  // "Not received" stays editable: a late parcel can still be reported again.
-  // Orders that answered "received" before that option went away stay locked.
-  const FINAL_RESPONSES = ["received", "cancelled"];
-  if (order.customerResponse && FINAL_RESPONSES.includes(order.customerResponse)) {
-    throw new ApiError(
-      400,
-      order.customerResponse === "received"
-        ? "You already confirmed this order as received, so the response can no longer be changed."
-        : "You already cancelled this order, so the response can no longer be changed."
+      "Only a shipped order can be reported as received or not received. Cancel this order if you changed your mind."
     );
   }
 
@@ -900,8 +902,47 @@ export async function updateCustomerResponse(
   order.customerResponseAt   = new Date();
   await order.save();
 
+  /*
+   * Reading the jobs before anything is written, so each rider can be told what
+   * closed theirs. Only a job somebody is actually riding has a fee to pay: an
+   * offer nobody answered is not work done, and a job the store already stopped
+   * has nothing left to settle, so both stay out of the payout record.
+   */
+  const closesTheSale = data.response === "received" && !wasDelivered;
+  const paidJobs = closesTheSale
+    ? await Delivery.find({ orderId: id, status: { $in: ACTIVE_DELIVERY_STATUSES } })
+        .select("_id riderId fee")
+        .lean()
+    : [];
+
+  if (closesTheSale) {
+    // The order first, exactly as the code path does it: settling the sale is
+    // what pays the rider, issues the warranties and converts the points, and
+    // closing an order that is already delivered is a no-op — so a second click
+    // or a retried request cannot book the fee twice.
+    await updateOrderStatus(id, { orderStatus: "delivered" }, requester?.id, {
+      byCustomer: true,
+    });
+
+    const now = new Date();
+    await Delivery.updateMany(
+      { orderId: id, status: { $in: ACTIVE_DELIVERY_STATUSES } },
+      {
+        $set: { status: "delivered", deliveredAt: now, feePaidVia: "customer" },
+        $push: {
+          history: {
+            status: "delivered",
+            at: now,
+            note: "Confirmed received by the customer",
+            by: requester?.id ?? null,
+          },
+        },
+      }
+    );
+  }
+
   const noteLog = data.note ? ` - "${data.note}"` : "";
-  await logOrderStatus(id, order.orderStatus, {
+  await logOrderStatus(id, closesTheSale ? "delivered" : order.orderStatus, {
     note: `Customer response: ${data.response}${noteLog}`,
     changedBy: requester?.id,
   });
@@ -920,5 +961,43 @@ export async function updateCustomerResponse(
     });
   }
 
+  /*
+   * A hand-over confirmed by the buyer is money leaving the store, so the store
+   * board says so on the same line it uses for every other delivery: what was
+   * paid, and to whom. The rider is told separately, because a rider who is
+   * still riding to an address that has just been signed for needs to know.
+   */
+  if (closesTheSale && paidJobs.length > 0) {
+    const paidTotal = paidJobs.reduce((sum, job) => sum + Number(job.fee || 0), 0);
+    const riders = paidJobs
+      .map((job) => String(job.riderId))
+      .filter((riderId) => riderId.length > 0);
+
+    await recordActivity({
+      type: "delivery",
+      title: `Delivery ${shortOrderNumber(order._id)} confirmed by the customer`,
+      detail: `${money(paidTotal)} paid to the rider · deducted from the store's profit`,
+      ref: order._id.toString(),
+    });
+
+    await Promise.all(
+      riders.map((riderId) =>
+        notifyUser({
+          userId: riderId,
+          role: "rider",
+          type: "delivery_update",
+          title: `Delivery ${shortOrderNumber(order._id)} was signed for`,
+          detail: "The customer confirmed the parcel themselves, so your job is closed and the fee is booked to your earnings.",
+          ref: String(paidJobs.find((job) => String(job.riderId) === riderId)?._id ?? ""),
+        })
+      )
+    );
+  }
+
+  // The stages above rewrote the row, so the caller gets what is actually stored.
+  if (closesTheSale) {
+    const settled = await Order.findById(id).lean();
+    if (settled) return settled;
+  }
   return order;
 }

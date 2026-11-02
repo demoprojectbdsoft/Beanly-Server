@@ -24,6 +24,7 @@ import { nextDeliveryStatuses, nextRiderStep, isLapsedOffer } from "./delivery.f
 import { ensureOtp, markOtpUsed, verifyOtpCode } from "./delivery.otp";
 import {
   AdminDeliveryQuery,
+  AdminPayoutsQuery,
   AssignDeliveryInput,
   DeclineDeliveryInput,
   GetRiderDeliveriesQuery,
@@ -84,6 +85,9 @@ export function toDto(delivery: any) {
     items: Number(delivery.items || 0),
     orderTotal: Number(delivery.orderTotal || 0),
     fee: Number(delivery.fee || 0),
+    // How a delivered job was paid out: the rider's code, or the customer's own
+    // confirmation. Empty on a job that never reached the door.
+    feePaidVia: delivery.feePaidVia || "",
     distanceKm: delivery.distanceKm ?? null,
     declineReason: delivery.declineReason || "",
     expiresAt: delivery.expiresAt ? new Date(delivery.expiresAt).toISOString() : null,
@@ -1048,11 +1052,15 @@ export async function declineDelivery(
 const STEP_TIMESTAMP: Record<string, string> = {
   picked_up: "pickedUpAt",
   out_for_delivery: "outForDeliveryAt",
-  cancelled: "cancelledAt",
 };
 
 /**
- * Moves an accepted job one step: picked up, out for delivery, or cancelled.
+ * Moves an accepted job one step: picked up, then out for delivery.
+ *
+ * Nothing else is done from here. A rider cannot cancel, and cannot decline a
+ * job already accepted — `declineDelivery` only answers an `assigned` row — so
+ * the two ways a delivery stops are the store's and the customer's, never the
+ * rider's.
  *
  * The atomic update carries the current status, so a double tap cannot skip a
  * stage, and the guard below rejects any jump the lifecycle does not allow.
@@ -1061,6 +1069,16 @@ export async function advanceDelivery(riderId: string, id: string, input: RiderS
   const delivery = await requireRiderDelivery(riderId, id);
   const from = delivery.status as DeliveryStatus;
   const to = input.status as DeliveryStatus;
+
+  // Said before anything is written, and in the rider's own terms. The
+  // validator refuses these two stages on the way in, so this only catches a
+  // client that is out of date, but it must not let one half-close a job.
+  if (to === "cancelled" || to === "declined") {
+    throw new ApiError(
+      400,
+      "A rider cannot cancel a delivery. Keep going to the door and close it with the customer's code. If the parcel must come back, call the store."
+    );
+  }
 
   const allowed = nextDeliveryStatuses(from);
   if (!allowed.includes(to)) {
@@ -1120,41 +1138,6 @@ export async function advanceDelivery(riderId: string, id: string, input: RiderS
     }
   }
 
-  if (to === "cancelled") {
-    const reason = input.note || "No reason given";
-    await recordActivity({
-      type: "delivery",
-      title: `Delivery ${orderNumber} cancelled by the rider`,
-      detail: reason,
-      ref: String(updated.orderId),
-    });
-
-    await notifyAdminDeliveryEmail({
-      heading: "A rider cancelled a delivery",
-      intro: "The parcel is back at the store. Assign another rider or cancel the order.",
-      orderNumber,
-      rows: [
-        { label: "Customer", value: updated.customerName },
-        { label: "City", value: updated.city },
-        { label: "Rider", value: (updated.riderId as any)?.name },
-      ],
-      note: reason,
-    });
-
-    if (order) {
-      await notifyCustomerDelivery({
-        userId: String(order.userId),
-        deliveryId: String(updated._id),
-        orderId: String(updated.orderId),
-        orderNumber,
-        title: "Your delivery was cancelled",
-        detail: "The store will assign another rider. Your order is unchanged.",
-        emailHeading: "Your delivery was cancelled",
-        emailRows: [{ label: "Order", value: orderNumber }],
-      });
-    }
-  }
-
   return toDto(updated);
 }
 
@@ -1165,6 +1148,11 @@ export async function advanceDelivery(riderId: string, id: string, input: RiderS
  * warranties, payment), and only then does the delivery become `delivered`.
  * Order first is what makes a retry safe: closing an already-delivered order is
  * a no-op, so a failed second step can simply be repeated.
+ *
+ * Reaching `delivered` is also what pays the rider: the fee the store set on
+ * this job is booked as paid here, and the same amount comes back off the
+ * store's profit. There is no separate payout step to remember, so the two
+ * numbers can never drift apart.
  */
 export async function completeDelivery(riderId: string, id: string, code: string) {
   const delivery = await requireRiderDelivery(riderId, id);
@@ -1199,7 +1187,7 @@ export async function completeDelivery(riderId: string, id: string, code: string
   const updated = await Delivery.findOneAndUpdate(
     { _id: delivery._id, riderId: new Types.ObjectId(riderId), status: "out_for_delivery" },
     {
-      $set: { status: "delivered", deliveredAt: now },
+      $set: { status: "delivered", deliveredAt: now, feePaidVia: "code" },
       $push: {
         history: { status: "delivered", at: now, note: "Code verified", by: riderId },
       },
@@ -1344,6 +1332,172 @@ export async function getAdminDeliveryOverview() {
     shippedWithoutRider,
     // Every one of these is a parcel on the road with a code waiting at the door.
     onTheRoad,
+  };
+}
+
+/**
+ * Where a period's buckets start, in the store's own terms: the last 30 or 90
+ * days read as days, a year and everything before it read as months. A day is
+ * the right grain when a week of work fits on one screen; a month is the right
+ * grain when the store is asking what a year cost them.
+ */
+function payoutWindow(range: string): { from: Date | null; format: string } {
+  const now = new Date();
+  if (range === "all") return { from: null, format: "%Y-%m" };
+
+  const days = Number(range);
+  const from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  from.setDate(from.getDate() - (days - 1));
+  return { from, format: days <= 90 ? "%Y-%m-%d" : "%Y-%m" };
+}
+
+/**
+ * The store's payout record.
+ *
+ * One row per job that paid a rider, which is one row per delivered delivery:
+ * the fee is booked the moment the hand-over is confirmed, by the rider's code
+ * or by the customer's own answer, so a delivered job always has a payout and a
+ * job that never reached the door never does. Nothing is paid out later by hand,
+ * so this list cannot fall behind the rider's own earnings screen and the two
+ * always add up to the same money.
+ *
+ * Every number is folded in the database, not in a loop over every row: a store
+ * with years of deliveries would otherwise pull its whole history into memory to
+ * draw one chart. The record table is the only part that is paged.
+ */
+export async function getAdminPayouts(query: AdminPayoutsQuery) {
+  const { from, format } = payoutWindow(query.range);
+
+  const matched: any = { status: "delivered" };
+  if (from) matched.deliveredAt = { $gte: from };
+  if (query.riderId && Types.ObjectId.isValid(query.riderId)) {
+    matched.riderId = new Types.ObjectId(query.riderId);
+  }
+
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const withDates = { ...matched, deliveredAt: { $ne: null, ...(from ? { $gte: from } : {}) } };
+
+  const [bucketRows, totalRows, monthRows, riderRows, outstanding, records, count] =
+    await Promise.all([
+      Delivery.aggregate([
+        { $match: withDates },
+        {
+          $group: {
+            _id: { $dateToString: { format, date: "$deliveredAt" } },
+            jobs: { $sum: 1 },
+            paid: { $sum: "$fee" },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      Delivery.aggregate([
+        { $match: matched },
+        { $group: { _id: null, jobs: { $sum: 1 }, paid: { $sum: "$fee" } } },
+      ]),
+      Delivery.aggregate([
+        { $match: { ...matched, deliveredAt: { $gte: monthStart } } },
+        { $group: { _id: null, jobs: { $sum: 1 }, paid: { $sum: "$fee" } } },
+      ]),
+      Delivery.aggregate([
+        { $match: withDates },
+        {
+          $group: {
+            _id: "$riderId",
+            jobs: { $sum: 1 },
+            paid: { $sum: "$fee" },
+            lastAt: { $max: "$deliveredAt" },
+          },
+        },
+        { $sort: { paid: -1 } },
+      ]),
+      // Money the store has promised but not spent yet: a job somebody is
+      // riding, which pays its fee the moment it reaches the door.
+      Delivery.aggregate([
+        {
+          $match: {
+            status: { $in: ACTIVE_DELIVERY_STATUSES },
+            ...(query.riderId && Types.ObjectId.isValid(query.riderId)
+              ? { riderId: new Types.ObjectId(query.riderId) }
+              : {}),
+          },
+        },
+        { $group: { _id: null, jobs: { $sum: 1 }, amount: { $sum: "$fee" } } },
+      ]),
+      Delivery.find(matched)
+        .populate("riderId", "name")
+        .sort(
+          query.sort === "oldest"
+            ? { deliveredAt: 1 }
+            : query.sort === "fee_desc"
+              ? { fee: -1, deliveredAt: -1 }
+              : { deliveredAt: -1 }
+        )
+        .skip((query.page - 1) * query.limit)
+        .limit(query.limit)
+        .select("orderId riderId city items orderTotal fee deliveredAt feePaidVia")
+        .lean(),
+      Delivery.countDocuments(matched),
+    ]);
+
+  const paid = Math.round((totalRows[0]?.paid ?? 0) * 100) / 100;
+  const jobs = totalRows[0]?.jobs ?? 0;
+  const owed = outstanding[0] ?? { jobs: 0, amount: 0 };
+
+  // A rider's name is not copied onto the job, so the board asks for the names
+  // it actually has payouts for instead of reading every account in the store.
+  const riderIds = riderRows.map((row: any) => row._id).filter((id: any) => Types.ObjectId.isValid(String(id)));
+  const riderDocs = riderIds.length
+    ? await User.find({ _id: { $in: riderIds } }).select("name").lean()
+    : [];
+  const names = new Map(riderDocs.map((rider: any) => [String(rider._id), rider.name || ""]));
+
+  return {
+    range: query.range,
+    totals: {
+      jobs,
+      paid,
+      avgPerJob: jobs > 0 ? Math.round((paid / jobs) * 100) / 100 : 0,
+      paidThisMonth: Math.round((monthRows[0]?.paid ?? 0) * 100) / 100,
+      monthJobs: monthRows[0]?.jobs ?? 0,
+    },
+    // What the store still owes the riders it has sent out. Not a cost yet, so
+    // it is never added to `paid`.
+    outstanding: {
+      jobs: owed.jobs,
+      amount: Math.round(owed.amount * 100) / 100,
+    },
+    series: bucketRows.map((row: any) => ({
+      label: String(row._id),
+      jobs: row.jobs,
+      paid: Math.round(row.paid * 100) / 100,
+    })),
+    byRider: riderRows.map((row: any) => ({
+      riderId: String(row._id),
+      name: names.get(String(row._id)) || "A rider",
+      jobs: row.jobs,
+      paid: Math.round(row.paid * 100) / 100,
+      lastAt: row.lastAt ? new Date(row.lastAt).toISOString() : null,
+    })),
+    records: records.map((record: any) => ({
+      _id: String(record._id),
+      orderId: String(record.orderId),
+      orderNumber: shortOrderNumber(record.orderId),
+      riderName: record.riderId?.name || "A rider",
+      city: record.city || "",
+      items: Number(record.items || 0),
+      orderTotal: Number(record.orderTotal || 0),
+      fee: Number(record.fee || 0),
+      deliveredAt: record.deliveredAt ? new Date(record.deliveredAt).toISOString() : null,
+      // A job closed before the hand-over was recorded says nothing about how it
+      // ended, and the code at the door is the only other way a job ever closed.
+      paidVia: record.feePaidVia === "customer" ? "customer" : "code",
+    })),
+    pagination: {
+      page: query.page,
+      limit: query.limit,
+      total: count,
+      totalPages: Math.ceil(count / query.limit) || 1,
+    },
   };
 }
 

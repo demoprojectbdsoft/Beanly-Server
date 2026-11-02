@@ -56,10 +56,16 @@ export const cancelDeliverySchema = z.object({
 
 /**
  * The rider's own step. `delivered` is not accepted here: a hand-over is
- * confirmed with the customer's code, on its own endpoint.
+ * confirmed with the customer's code, on its own endpoint. `cancelled` is not
+ * accepted either: a rider who has taken a job cannot put it back, so the only
+ * way a delivery stops is the customer calling the order off or the store
+ * stopping the job, and both of those are said elsewhere.
  */
 export const riderStepSchema = z.object({
-  status: z.enum(["picked_up", "out_for_delivery", "cancelled"]),
+  status: z.enum(["picked_up", "out_for_delivery"], {
+    message:
+      "An accepted delivery only moves forward: picked up, then out for delivery. Only the customer or the store can cancel it.",
+  }),
   note: z.string().trim().max(300).optional(),
 });
 
@@ -89,6 +95,21 @@ export const adminDeliveryQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
+/**
+ * The store's payout record.
+ *
+ * `range` is how far back the graph looks, in days; `all` is every job the store
+ * has ever paid. Thirty and ninety days fold into daily buckets because a store
+ * asking about a month wants to see the days, and a year wants the months.
+ */
+export const adminPayoutsQuerySchema = z.object({
+  range: z.enum(["30", "90", "365", "all"]).default("365"),
+  riderId: z.string().optional(),
+  sort: z.enum(["newest", "oldest", "fee_desc"]).default("newest"),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(200).default(20),
+});
+
 /** Who may look at a tracking page: the buyer, or the store. */
 export const trackingQuerySchema = z.object({
   orderId: objectIdSchema("A valid order id is required").optional(),
@@ -104,4 +125,5 @@ export type RiderStepInput = z.infer<typeof riderStepSchema>;
 export type LocationInput = z.infer<typeof locationSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
 export type AdminDeliveryQuery = z.infer<typeof adminDeliveryQuerySchema>;
+export type AdminPayoutsQuery = z.infer<typeof adminPayoutsQuerySchema>;
 export type TrackingQuery = z.infer<typeof trackingQuerySchema>;

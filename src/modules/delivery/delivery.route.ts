@@ -44,6 +44,13 @@ router.get(
   requireRole("admin"),
   deliveryController.listRiders
 );
+/** What every delivered job paid the rider, and so what it took from the store. */
+router.get(
+  "/admin/payouts",
+  requireAuth,
+  requireRole("admin"),
+  deliveryController.getRiderPayouts
+);
 router.get(
   "/admin/order/:orderId",
   requireAuth,
