@@ -1386,13 +1386,24 @@ export async function getAdminPayouts(query: AdminPayoutsQuery) {
             _id: { $dateToString: { format, date: "$deliveredAt" } },
             jobs: { $sum: 1 },
             paid: { $sum: "$fee" },
+            sales: { $sum: "$orderTotal" },
           },
         },
         { $sort: { _id: 1 } },
       ]),
       Delivery.aggregate([
         { $match: matched },
-        { $group: { _id: null, jobs: { $sum: 1 }, paid: { $sum: "$fee" } } },
+        {
+          $group: {
+            _id: null,
+            jobs: { $sum: 1 },
+            paid: { $sum: "$fee" },
+            // The sales these fees came out of. A fee on its own says little;
+            // beside the money it was paid from it says how much of a delivered
+            // sale the store actually kept.
+            sales: { $sum: "$orderTotal" },
+          },
+        },
       ]),
       Delivery.aggregate([
         { $match: { ...matched, deliveredAt: { $gte: monthStart } } },
@@ -1441,6 +1452,7 @@ export async function getAdminPayouts(query: AdminPayoutsQuery) {
 
   const paid = Math.round((totalRows[0]?.paid ?? 0) * 100) / 100;
   const jobs = totalRows[0]?.jobs ?? 0;
+  const sales = Math.round((totalRows[0]?.sales ?? 0) * 100) / 100;
   const owed = outstanding[0] ?? { jobs: 0, amount: 0 };
 
   // A rider's name is not copied onto the job, so the board asks for the names
@@ -1456,6 +1468,11 @@ export async function getAdminPayouts(query: AdminPayoutsQuery) {
     totals: {
       jobs,
       paid,
+      // The delivered sales these fees were taken out of, and the share of that
+      // money which left as the riders' pay. A fee on its own says little; next
+      // to the sale it came from it says what the store kept.
+      sales,
+      feeSharePct: sales > 0 ? Math.round((paid / sales) * 1000) / 10 : 0,
       avgPerJob: jobs > 0 ? Math.round((paid / jobs) * 100) / 100 : 0,
       paidThisMonth: Math.round((monthRows[0]?.paid ?? 0) * 100) / 100,
       monthJobs: monthRows[0]?.jobs ?? 0,
@@ -1470,6 +1487,7 @@ export async function getAdminPayouts(query: AdminPayoutsQuery) {
       label: String(row._id),
       jobs: row.jobs,
       paid: Math.round(row.paid * 100) / 100,
+      sales: Math.round(row.sales * 100) / 100,
     })),
     byRider: riderRows.map((row: any) => ({
       riderId: String(row._id),
