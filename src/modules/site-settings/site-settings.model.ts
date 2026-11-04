@@ -140,6 +140,17 @@ const siteSettingsSchema = new Schema(
     topBarEnabled: { type: Boolean, default: true },
     topBarItems: { type: [topBarItemSchema], default: [] },
 
+    // ── Phone Navbar
+    // Small screens carry one hamburger, and this says which panel it opens:
+    // a drawer from the left edge, a drawer from the right edge, or the
+    // full-screen panel that grows out of the middle. The menu inside is the
+    // same either way, so the choice is about where it arrives, not what holds.
+    mobileMenuPlacement: {
+      type: String,
+      enum: ["left", "right", "middle"],
+      default: "middle",
+    },
+
     // ── Logo
     logoType: {
       type: String,
