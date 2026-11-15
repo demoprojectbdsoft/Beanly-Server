@@ -204,19 +204,29 @@ export async function revokeRole(userId: string, input: RevokeRoleInput, adminId
     user.riderStatus = "none";
     user.riderApplicationId = null;
   }
+  // A revoked authority cannot stay parked. A suspension is stored per role,
+  // so a leftover row would reopen the workspace already closed the moment an
+  // admin grants the role again — a fresh grant must start unsuspended.
+  const parked = Array.isArray(user.roleSuspensions) ? user.roleSuspensions : [];
+  user.roleSuspensions = parked.filter((row: any) => normalizeRole(row?.role) !== target);
   await user.save();
 
-  await notifyUser({
-    userId: String(user._id),
-    role: target === "rider" ? "rider" : "vendor",
-    type: target === "rider" ? "rider_application" : "vendor_application",
-    title: `Your ${target} access was removed`,
-    detail: input.reason?.trim() || "Contact support if you think this is a mistake.",
-    ref: String(adminId || ""),
-  });
+  // Only the marketplace roles have a bell of their own. Demoting staff is an
+  // authority change, not a marketplace event, so it is recorded but not
+  // pushed to the account.
+  if (target === "vendor" || target === "rider") {
+    await notifyUser({
+      userId: String(user._id),
+      role: target,
+      type: target === "rider" ? "rider_application" : "vendor_application",
+      title: `Your ${target} access was removed`,
+      detail: input.reason?.trim() || "Contact support if you think this is a mistake.",
+      ref: String(adminId || ""),
+    });
+  }
 
   await recordActivity({
-    type: target === "rider" ? "rider" : "vendor",
+    type: target === "rider" ? "rider" : target === "vendor" ? "vendor" : "user",
     title: `${target} role revoked`,
     detail: `${user.email || "Account"} · by admin`,
     ref: String(user._id),
@@ -225,6 +235,7 @@ export async function revokeRole(userId: string, input: RevokeRoleInput, adminId
   return {
     roles: nextRoles,
     activeRole: active,
+    roleSuspensions: user.roleSuspensions || [],
   };
 }
 
@@ -273,7 +284,18 @@ export async function adminSetRoles(userId: string, input: { roles: string[] }, 
   const previous = normalizeRoles(user.roles);
   const removed = previous.filter((role) => !nextRoles.includes(role));
 
-  const suspended = suspendedRoleNames(user).filter((role) => nextRoles.includes(role));
+  // A parked dashboard only survives while the role it parks is still held AND
+  // was already held before this write. A role that left the array and came
+  // back was effectively revoked and re-granted, so its old parking must not
+  // follow it in — otherwise the new grant would open already suspended.
+  const parkedRows = (Array.isArray(user.roleSuspensions) ? user.roleSuspensions : []).filter(
+    (row: any) => {
+      const name = normalizeRole(row?.role);
+      return Boolean(name) && nextRoles.includes(name) && previous.includes(name);
+    }
+  );
+  user.roleSuspensions = parkedRows;
+  const suspended = suspendedRoleNames({ roleSuspensions: parkedRows });
   let active = normalizeRole(user.activeRole);
   if (!nextRoles.includes(active) || (active !== "customer" && suspended.includes(active))) {
     active = nextRoles.includes("customer") ? "customer" : nextRoles[0];

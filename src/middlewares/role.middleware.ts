@@ -22,12 +22,15 @@ export function requireRole(...allowedRoles: string[]) {
     const isAllowed = hasAnyRole(user?.roles, allowed, user?.role);
     const isAdminAsking = allowed.includes("admin") && isAdminRole(user?.role);
 
-    // A parked workspace is closed even though the role stays approved: the
-    // suspension service moves the account off that dashboard, so an active
-    // role matching a suspended entry means a stale token or a direct call.
-    const active = normalizeRole(user?.activeRole ?? user?.role);
-    if (active && active !== "customer" && user?.suspendedRoles?.includes(active)) {
-      return next(new ApiError(403, `Your ${active} access is suspended. Contact support.`));
+    // A parked workspace is closed even though the role stays approved: a
+    // suspension keeps the entry in `roles`, so the array alone would let a
+    // suspended seller keep calling their endpoints from any dashboard. The
+    // check names the roles this route guards, which makes it the same rule
+    // for a rider and a vendor.
+    const suspended = user?.suspendedRoles || [];
+    const parked = allowed.filter((role) => suspended.includes(role));
+    if (parked.length > 0 && !isAdminAsking) {
+      return next(new ApiError(403, `Your ${parked[0]} access is suspended. Contact support.`));
     }
 
     if (!isAllowed && !isAdminAsking) {
