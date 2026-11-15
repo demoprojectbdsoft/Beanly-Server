@@ -3,6 +3,7 @@ import { ProductReview } from "../review/review.model";
 import { Category } from "../category/category.model";
 import { SubCategory } from "../subcategory/subcategory.model";
 import { VendorStore } from "../vendor/vendor-store.model";
+import { Order } from "../order/order.model";
 import { ApiError } from "../../utils/apiError";
 import { idVariants } from "../../utils/ids";
 import { CreateProductInput, UpdateProductInput, GetProductsQuery } from "./product.validator";
@@ -582,7 +583,49 @@ export async function getProductBySlug(slug: string, view: ProductView = "public
   }
 
   const ratingsMap = await getRatingsMap([product._id.toString()]);
-  return formatProduct(product, { ratingsMap, view });
+  const formatted = formatProduct(product, { ratingsMap, view });
+  if (view !== "admin") return formatted;
+
+  // The desk's money is what was really charged, not today's price times the
+  // units sold: the delivered order lines are the only record of that.
+  return { ...formatted, sales: await realizedSalesFor(product) };
+}
+
+/**
+ * What one product actually earned on delivered orders.
+ *
+ * Every order line stores the price it was charged at, so revenue is summed
+ * from the orders themselves: a unit sold during a sale keeps that sale's
+ * price, and an order cancelled after delivery stops counting. Cost is the
+ * product's current cost per unit, the same number the desk shows elsewhere.
+ */
+async function realizedSalesFor(product: any) {
+  const productId = String(product._id ?? product.id ?? "");
+  const costPrice =
+    product.investPrice != null && Number.isFinite(Number(product.investPrice))
+      ? Number(product.investPrice)
+      : null;
+
+  const [row] = productId
+    ? await Order.aggregate([
+        { $match: { orderStatus: "delivered" } },
+        { $unwind: "$items" },
+        { $match: { "items.productId": { $in: idVariants(productId) } } },
+        {
+          $group: {
+            _id: null,
+            units: { $sum: "$items.quantity" },
+            revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
+          },
+        },
+      ])
+    : [];
+
+  const units = Number(row?.units) || 0;
+  const revenue = round2(Number(row?.revenue) || 0);
+  const cost = costPrice != null ? round2(costPrice * units) : null;
+
+  return { units, revenue, cost, profit: cost != null ? round2(revenue - cost) : null };
 }
 
 /**
