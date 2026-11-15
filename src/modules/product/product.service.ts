@@ -82,6 +82,36 @@ function round1(n: number): number {
 }
 
 /**
+ * Whether one unit can be bought right now.
+ *
+ * A tracked product is sold out the moment its count reaches zero, whatever the
+ * stored flag still says: orders lower the count and do not rewrite the flag. A
+ * product saved without a count is not tracked and is always offered.
+ */
+export function isSellableStock(stockQuantity: unknown, inStock: unknown): boolean {
+  if (stockQuantity == null) return true;
+  const quantity = Number(stockQuantity);
+  if (!Number.isFinite(quantity)) return true;
+  return quantity > 0 && inStock !== false;
+}
+
+/**
+ * Settles the stock flag on the way in, so the stored row agrees with its count.
+ *
+ * Clearing the count means "not tracked" and the product is always available;
+ * zero units means it is out of stock. A positive count leaves a deliberate
+ * "off" switch alone, because an admin may pause a product that still has stock.
+ */
+function applyStockAvailability<
+  T extends { stockQuantity?: number | null; inStock?: boolean }
+>(data: T): T {
+  if (data.stockQuantity === undefined) return data;
+  if (data.stockQuantity === null) return { ...data, inStock: true };
+  if (data.stockQuantity <= 0) return { ...data, inStock: false };
+  return data.inStock === undefined ? { ...data, inStock: true } : data;
+}
+
+/**
  * Shapes a raw Mongoose product document into the API response format.
  *
  * The public shape deliberately drops the cost price and everything derived
@@ -145,9 +175,9 @@ export function formatProduct(product: any, options: FormatProductOptions = {}) 
     badges: Array.isArray(obj.badges) ? obj.badges : [],
     specifications,
     // A product saved with no stock quantity is not stock-tracked: nothing can
-    // run it dry, so it is always offered. The stored flag is ignored, so a
-    // leftover "out of stock" can never hide it again.
-    inStock: obj.stockQuantity == null ? true : Boolean(obj.inStock),
+    // run it dry, so it is always offered. A tracked product with nothing left
+    // reads as out of stock even when its stored flag was never updated.
+    inStock: isSellableStock(obj.stockQuantity, obj.inStock),
     price: effectivePrice,
     originalPrice: effectiveOriginalPrice,
     categories: categoryName ? [categoryName] : [],
@@ -264,7 +294,7 @@ export async function createProduct(data: CreateProductInput) {
 
   assertBrandForManufacturerWarranty(data.warrantyType, data.specifications);
 
-  const product = await Product.create(data);
+  const product = await Product.create(applyStockAvailability(data));
   return formatProduct(product, { view: "admin" });
 }
 
@@ -417,11 +447,23 @@ async function buildFilterConditions(
 
   if (isFeatured !== undefined) conditions.push({ isFeatured });
   if (inStock === true) {
-    // An untracked product (no stock quantity) is always available, even if an
-    // old record still carries a false flag.
-    conditions.push({ $or: [{ inStock: true }, { stockQuantity: null }] });
+    // An untracked product (no stock quantity) is always available, whatever an
+    // old record's flag says. A tracked one needs units left and no manual stop.
+    conditions.push({
+      $or: [
+        { stockQuantity: null },
+        { stockQuantity: { $gt: 0 }, inStock: { $ne: false } },
+      ],
+    });
   } else if (inStock === false) {
-    conditions.push({ inStock: false, stockQuantity: { $ne: null } });
+    // Sold out is the same reading the status column shows: tracked, and either
+    // the count is gone or an admin switched the product off.
+    conditions.push({
+      $and: [
+        { stockQuantity: { $ne: null } },
+        { $or: [{ stockQuantity: { $lte: 0 } }, { inStock: false }] },
+      ],
+    });
   }
   if (query.minRating !== undefined) conditions.push({ rating: { $gte: query.minRating } });
   if (query.hasOffer) conditions.push(buildOfferCondition());
@@ -510,7 +552,7 @@ export async function updateProduct(id: string, data: UpdateProductInput) {
     );
   }
 
-  const product = await Product.findByIdAndUpdate(id, data, { new: true });
+  const product = await Product.findByIdAndUpdate(id, applyStockAvailability(data), { new: true });
   if (!product) throw new ApiError(404, "Product not found");
   return formatProduct(product, { view: "admin" });
 }
