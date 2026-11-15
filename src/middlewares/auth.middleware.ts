@@ -163,3 +163,33 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   return next();
 }
+
+/**
+ * Reads the caller when a token is present, and never turns a request away.
+ *
+ * A public route may still answer differently to the store team — the product
+ * catalogue serves everyone, but the admin view is what the desks read. One
+ * lookup covers both, and an invalid token simply means "not signed in".
+ */
+export async function attachUser(req: Request, _res: Response, next: NextFunction) {
+  const token = readToken(req);
+  if (!token) return next();
+
+  try {
+    let user: AuthUser | null = null;
+    let resolvedFromJwt = false;
+    try {
+      user = await userFromJwt(token);
+      resolvedFromJwt = true;
+    } catch {
+      user = await userFromSession(token);
+    }
+
+    if (user && resolvedFromJwt) user = await withCurrentRole(user);
+    if (user) req.user = user;
+  } catch {
+    // A token this route cannot verify is the same as no token at all.
+  }
+
+  return next();
+}

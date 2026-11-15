@@ -33,9 +33,64 @@ async function getRatingsMap(productIds: string[]) {
   return new Map(stats.map((s) => [s._id, s]));
 }
 
-// Shapes a raw Mongoose product document into the API response format.
-// Accepts an optional ratingsMap to attach live rating/reviewCount from the reviews collection.
-export function formatProduct(product: any, ratingsMap?: Map<string, any>) {
+// ─── Shape of the response ─────────────────────────────────────────────────────
+
+/**
+ * Who is reading a row.
+ *
+ * "public" is every shop page and every anonymous caller: it never carries the
+ * cost the store paid. "admin" is the store team's own desks, which need the
+ * cost and the margin and are allowed to see rows a shopper cannot reach.
+ */
+export type ProductView = "public" | "admin";
+
+export interface FormatProductOptions {
+  ratingsMap?: Map<string, any>;
+  view?: ProductView;
+}
+
+/** True when the offer's end date has already gone by. */
+export function offerHasLapsed(product: { offerEndDate?: Date | string | null }): boolean {
+  if (!product.offerEndDate) return false;
+  const end = new Date(product.offerEndDate).getTime();
+  return Number.isFinite(end) && end <= Date.now();
+}
+
+/**
+ * The price a buyer is charged for one unit, right now.
+ *
+ * A lapsed offer is not a display detail: the sale is over, so the original
+ * price is the price. The cart, the checkout and every product screen read this
+ * one rule, so what is shown and what is charged can never disagree.
+ */
+export function sellingPriceOf(product: {
+  price?: number | null;
+  originalPrice?: number | null;
+  offerEndDate?: Date | string | null;
+}): number {
+  const price = Number(product.price) || 0;
+  const original = product.originalPrice != null ? Number(product.originalPrice) : 0;
+  return offerHasLapsed(product) && original > 0 ? original : price;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+/**
+ * Shapes a raw Mongoose product document into the API response format.
+ *
+ * The public shape deliberately drops the cost price and everything derived
+ * from it: those fields are the store's own numbers, and this endpoint answers
+ * anonymous callers. Only the admin view adds them back, together with the
+ * values as they are stored, so an edit form can round-trip them unchanged.
+ */
+export function formatProduct(product: any, options: FormatProductOptions = {}) {
+  const { ratingsMap, view = "public" } = options;
   const obj = product.toObject ? product.toObject({ flattenMaps: true }) : product;
   const id = obj._id?.toString() ?? obj.id;
   const stat = ratingsMap?.get(id);
@@ -47,16 +102,19 @@ export function formatProduct(product: any, ratingsMap?: Map<string, any>) {
     specifications = {};
   }
 
-  const isOfferExpired = obj.offerEndDate && new Date(obj.offerEndDate).getTime() <= Date.now();
+  const isOfferExpired = offerHasLapsed(obj);
 
-  // When offer expires: selling price reverts to originalPrice, no discount shown
-  const effectivePrice = isOfferExpired && obj.originalPrice ? obj.originalPrice : obj.price;
-  const effectiveOriginalPrice = isOfferExpired ? undefined : obj.originalPrice;
+  // The stored price is what the admin desk edits; the effective price is what a
+  // buyer is charged. A lapsed offer reverts to the original price.
+  const storedPrice = Number(obj.price) || 0;
+  const storedOriginalPrice = obj.originalPrice != null ? Number(obj.originalPrice) : undefined;
+  const effectivePrice = sellingPriceOf(obj);
+  const effectiveOriginalPrice = isOfferExpired ? undefined : storedOriginalPrice;
 
   // Calculate discount% only when offer is still active
   const discountPercentage =
-    !isOfferExpired && obj.originalPrice && obj.originalPrice > obj.price
-      ? Math.round(((obj.originalPrice - obj.price) / obj.originalPrice) * 100)
+    !isOfferExpired && storedOriginalPrice && storedOriginalPrice > storedPrice
+      ? Math.round(((storedOriginalPrice - storedPrice) / storedOriginalPrice) * 100)
       : undefined;
 
   // Resolve category label from populated ref or specifications fallback
@@ -65,17 +123,6 @@ export function formatProduct(product: any, ratingsMap?: Map<string, any>) {
     specifications?.Category ||
     specifications?.category ||
     "";
-
-  // Profit margin % — only meaningful when investPrice is set
-  const profitMargin =
-    obj.investPrice != null && effectivePrice != null
-      ? Math.round(((effectivePrice - obj.investPrice) / effectivePrice) * 100 * 10) / 10
-      : undefined;
-
-  const unitProfit =
-    obj.investPrice != null && effectivePrice != null
-      ? Math.round((effectivePrice - obj.investPrice) * 100) / 100
-      : undefined;
 
   const sellCount = typeof obj.sellCount === "number" ? obj.sellCount : 0;
 
@@ -87,13 +134,12 @@ export function formatProduct(product: any, ratingsMap?: Map<string, any>) {
       ? { id: String(obj.storeId._id), name: obj.storeId.name, slug: obj.storeId.slug || "" }
       : undefined;
 
-  const totalProfit =
-    unitProfit != null
-      ? Math.round(unitProfit * sellCount * 100) / 100
-      : undefined;
+  // The cost price and everything derived from it stay off the public shape, so
+  // the spread below drops it before the fields are added back for the admin.
+  const { investPrice: storedInvestPrice, ...productFields } = obj;
 
-  return {
-    ...obj,
+  const response: Record<string, any> = {
+    ...productFields,
     id,
     seller,
     badges: Array.isArray(obj.badges) ? obj.badges : [],
@@ -106,14 +152,36 @@ export function formatProduct(product: any, ratingsMap?: Map<string, any>) {
     originalPrice: effectiveOriginalPrice,
     categories: categoryName ? [categoryName] : [],
     discountPercentage,
-    isOfferExpired: Boolean(isOfferExpired),
-    investPrice: obj.investPrice,
-    profitMargin,
-    unitProfit,
-    totalProfit,
+    isOfferExpired: isOfferExpired,
     sellCount,
     rating: stat ? Math.round(stat.avgRating * 10) / 10 : (obj.rating ?? 0),
     reviewCount: stat ? stat.count : (obj.reviewCount ?? 0),
+  };
+
+  if (view !== "admin") return response;
+
+  // Profit margin % — only meaningful when a cost and a price exist
+  const investPrice =
+    storedInvestPrice != null && Number.isFinite(Number(storedInvestPrice))
+      ? Number(storedInvestPrice)
+      : undefined;
+  const unitProfit = investPrice != null ? round2(effectivePrice - investPrice) : undefined;
+  const profitMargin =
+    investPrice != null && effectivePrice > 0
+      ? round1(((effectivePrice - investPrice) / effectivePrice) * 100)
+      : undefined;
+
+  return {
+    ...response,
+    /** The values as stored, so the edit form never saves a display price back. */
+    storedPrice,
+    storedOriginalPrice,
+    /** The offer deadline as stored, lapsed or not: the desk needs to see it. */
+    offerEndsAt: obj.offerEndDate ?? null,
+    investPrice,
+    profitMargin,
+    unitProfit,
+    totalProfit: unitProfit != null ? round2(unitProfit * sellCount) : undefined,
   };
 }
 
@@ -197,7 +265,7 @@ export async function createProduct(data: CreateProductInput) {
   assertBrandForManufacturerWarranty(data.warrantyType, data.specifications);
 
   const product = await Product.create(data);
-  return formatProduct(product);
+  return formatProduct(product, { view: "admin" });
 }
 
 // ─── Filter builders ──────────────────────────────────────────────────────────
@@ -288,8 +356,16 @@ function buildOfferCondition() {
   };
 }
 
-/** Turns the shop query into the list of AND-ed Mongo conditions. */
-async function buildFilterConditions(query: GetProductsQuery) {
+/**
+ * Turns the shop query into the list of AND-ed Mongo conditions.
+ *
+ * `includeHidden` is the admin view: the store team's catalog has to show the
+ * rows it governs, including a seller's drafts and archived stock.
+ */
+async function buildFilterConditions(
+  query: GetProductsQuery,
+  options: { includeHidden?: boolean } = {}
+) {
   const { category, subCategory, search, minPrice, maxPrice, isFeatured, inStock } = query;
   const conditions: any[] = [];
 
@@ -323,18 +399,21 @@ async function buildFilterConditions(query: GetProductsQuery) {
 
   // The public catalogue never serves a vendor's draft, archived or hidden row.
   // Admin-created products carry no vendor status, so they stay visible exactly
-  // as before this field existed.
-  conditions.push({
-    $and: [
-      { isVisible: { $ne: false } },
-      {
-        $or: [
-          { vendorProductStatus: { $exists: false } },
-          { vendorProductStatus: { $in: [...VENDOR_LIVE_PRODUCT_STATUSES] } },
-        ],
-      },
-    ],
-  });
+  // as before this field existed. The admin view skips the rule: a desk cannot
+  // review what it is not allowed to list.
+  if (!options.includeHidden) {
+    conditions.push({
+      $and: [
+        { isVisible: { $ne: false } },
+        {
+          $or: [
+            { vendorProductStatus: { $exists: false } },
+            { vendorProductStatus: { $in: [...VENDOR_LIVE_PRODUCT_STATUSES] } },
+          ],
+        },
+      ],
+    });
+  }
 
   if (isFeatured !== undefined) conditions.push({ isFeatured });
   if (inStock === true) {
@@ -350,10 +429,10 @@ async function buildFilterConditions(query: GetProductsQuery) {
   return conditions;
 }
 
-export async function getProducts(query: GetProductsQuery) {
+export async function getProducts(query: GetProductsQuery, view: ProductView = "public") {
   const { page, limit, sort } = query;
 
-  const conditions = await buildFilterConditions(query);
+  const conditions = await buildFilterConditions(query, { includeHidden: view === "admin" });
   const filter = conditions.length > 0 ? { $and: conditions } : {};
   const sortCriteria = SORT_OPTIONS[sort ?? ""] ?? { createdAt: -1 };
   const skip = (page - 1) * limit;
@@ -375,7 +454,7 @@ export async function getProducts(query: GetProductsQuery) {
   const ratingsMap = await getRatingsMap(products.map((p) => p._id.toString()));
 
   return {
-    products: products.map((p) => formatProduct(p, ratingsMap)),
+    products: products.map((p) => formatProduct(p, { ratingsMap, view })),
     total,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   };
@@ -433,7 +512,7 @@ export async function updateProduct(id: string, data: UpdateProductInput) {
 
   const product = await Product.findByIdAndUpdate(id, data, { new: true });
   if (!product) throw new ApiError(404, "Product not found");
-  return formatProduct(product);
+  return formatProduct(product, { view: "admin" });
 }
 
 export async function deleteProduct(id: string) {
@@ -441,7 +520,7 @@ export async function deleteProduct(id: string) {
   if (!product) throw new ApiError(404, "Product not found");
 }
 
-export async function getProductBySlug(slug: string) {
+export async function getProductBySlug(slug: string, view: ProductView = "public") {
   const product = await Product.findOne({ slug })
     .populate("categoryId", "name slug")
     .populate("subCategoryIds", "name slug")
@@ -449,12 +528,17 @@ export async function getProductBySlug(slug: string) {
   if (!product) throw new ApiError(404, "Product not found");
 
   // A vendor's hidden or unpublished row is not a storefront page, even to
-  // someone who guessed the link.
+  // someone who guessed the link. The admin view reads it so the desk can act
+  // on a listing a shopper cannot reach.
   const blockedStatuses = ["draft", "pending_review", "rejected", "archived"];
-  if (product.isVisible === false || blockedStatuses.includes(String((product as any).vendorProductStatus))) {
+  if (
+    view !== "admin" &&
+    (product.isVisible === false ||
+      blockedStatuses.includes(String((product as any).vendorProductStatus)))
+  ) {
     throw new ApiError(404, "Product not found");
   }
 
   const ratingsMap = await getRatingsMap([product._id.toString()]);
-  return formatProduct(product, ratingsMap);
+  return formatProduct(product, { ratingsMap, view });
 }
