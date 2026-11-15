@@ -134,6 +134,27 @@ function minutesBetween(from: Date | null, to: Date | null): number | null {
   return diff >= 0 ? diff / 60_000 : null;
 }
 
+/**
+ * The moment a job's delivery clock starts.
+ *
+ * Start delivery, not accept. The time between accepting and setting off is the
+ * rider waiting at the store — the store's delay, not a measure of how fast
+ * anybody rides — and counting it made an average that read as "how long a
+ * delivery takes" answer "how long the whole job sat open".
+ *
+ * Rows written before that stage existed fall back to the pickup and then the
+ * accept, so the average keeps its history instead of quietly dropping every
+ * older job from the sample.
+ */
+function deliveryStartedAt(delivery: {
+  outForDeliveryAt?: Date | string | null;
+  pickedUpAt?: Date | string | null;
+  acceptedAt?: Date | string | null;
+}): Date | null {
+  const stamp = delivery.outForDeliveryAt ?? delivery.pickedUpAt ?? delivery.acceptedAt;
+  return stamp ? new Date(stamp) : null;
+}
+
 /** Loads a delivery or throws the message the caller can act on. */
 async function requireDelivery(id: string) {
   if (!Types.ObjectId.isValid(id)) throw new ApiError(404, "Delivery not found");
@@ -312,10 +333,7 @@ export async function getRiderStats(riderId: string, query: RiderStatsQuery) {
         earningsInWindow += fee;
       }
 
-      const minutes = minutesBetween(
-        delivery.acceptedAt ? new Date(delivery.acceptedAt) : null,
-        deliveredAt
-      );
+      const minutes = minutesBetween(deliveryStartedAt(delivery), deliveredAt);
       if (minutes !== null) {
         deliveryMinutes += minutes;
         deliverySamples++;

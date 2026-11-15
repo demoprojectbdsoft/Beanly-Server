@@ -123,8 +123,32 @@ export async function getTracking(orderId: string, requester: Requester) {
     };
   }
 
-  const location = await latestLocation(String(delivery._id));
-  const progress = trailProgress(location?.trail || [], delivery.distanceKm ?? null);
+  /*
+   * The customer's map, and the clock behind it.
+   *
+   * A position is only handed over once the rider has started the delivery. The
+   * phone may already be reporting — the watch starts at pickup so the trail
+   * begins at the store door — but until the ride starts those pings are a
+   * person standing still, and a dot parked outside the shop reads as a
+   * delivery that has stalled. The arrival estimate sits behind the same gate:
+   * it is measured from the rider's own position, so before the ride starts it
+   * would be a guess dressed up as a number.
+   */
+  const isOnTheRoad = delivery.status === "out_for_delivery";
+  const stored = isOnTheRoad ? await latestLocation(String(delivery._id)) : null;
+
+  // Only the road counts towards progress. Pings recorded while the rider was
+  // still at the store are GPS jitter around one spot, and summing them would
+  // show a parcel that has not left the shop as already part-way to the door.
+  const startedAt = delivery.outForDeliveryAt
+    ? new Date(delivery.outForDeliveryAt).getTime()
+    : null;
+  const trail = (stored?.trail || []).filter(
+    (point) => startedAt === null || !point.at || new Date(point.at).getTime() >= startedAt
+  );
+  const location = stored ? { ...stored, trail } : null;
+
+  const progress = trailProgress(trail, delivery.distanceKm ?? null);
 
   // The code is only useful while the parcel is on its way. Once the job is
   // closed there is nothing left to read at the door.
@@ -144,7 +168,9 @@ export async function getTracking(orderId: string, requester: Requester) {
     },
     delivery: toDto(delivery),
     location,
-    eta: etaFrom(delivery.distanceKm ?? null, location?.speed ?? null, progress),
+    eta: isOnTheRoad
+      ? etaFrom(delivery.distanceKm ?? null, location?.speed ?? null, progress)
+      : null,
     otp: otp ? { ...otp, progress } : null,
     isOwner: true,
     serverTime: new Date().toISOString(),
