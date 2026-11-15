@@ -48,3 +48,9 @@ export const deleteProduct = catchAsync(async (req, res) => {
   await productService.deleteProduct(req.params.id as string);
   apiResponse(res, 200, null, "Product deleted");
 });
+
+/** Scheduled: closes offers whose deadline has passed. Also callable by an admin. */
+export const expireProductOffers = catchAsync(async (_req, res) => {
+  const result = await productService.expireProductOffers();
+  apiResponse(res, 200, result, "Lapsed product offers closed");
+});

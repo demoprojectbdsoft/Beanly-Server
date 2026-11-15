@@ -584,3 +584,38 @@ export async function getProductBySlug(slug: string, view: ProductView = "public
   const ratingsMap = await getRatingsMap([product._id.toString()]);
   return formatProduct(product, { ratingsMap, view });
 }
+
+/**
+ * The daily sweep: an offer that ran out becomes a plain price.
+ *
+ * The read rule already reverts a lapsed offer, so no shopper ever sees a dead
+ * deal. This writes that same answer down: the stored price becomes the price
+ * sorting and price filters read, and the deadline is cleared so the product is
+ * an ordinary one again. Every update is guarded by the deadline, so a sweep
+ * that races a fresh offer cannot overwrite the new one.
+ */
+export async function expireProductOffers() {
+  const now = new Date();
+  const lapsed = await Product.find({ offerEndDate: { $ne: null, $lte: now } })
+    .select("price originalPrice")
+    .lean();
+
+  let reverted = 0;
+
+  for (const row of lapsed as any[]) {
+    const original = Number(row.originalPrice);
+    // Without a usable original price there is nothing to revert to; the row
+    // still loses its lapsed deadline.
+    const nextPrice =
+      Number.isFinite(original) && original > 0 ? original : Number(row.price) || 0;
+
+    const result = await Product.updateOne(
+      { _id: row._id, offerEndDate: { $ne: null, $lte: now } },
+      { $set: { price: nextPrice, offerEndDate: null } }
+    );
+
+    if (result.modifiedCount) reverted += 1;
+  }
+
+  return { reverted };
+}

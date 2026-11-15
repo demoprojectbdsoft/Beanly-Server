@@ -35,6 +35,7 @@ import {
   redeemCoupon,
   releaseCouponForOrder,
 } from "../coupon/coupon.service";
+import { sellingPriceOf } from "../product/product.service";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -123,7 +124,10 @@ async function buildOrderItems(items: CreateOrderInput["items"]) {
       throw new ApiError(400, `Insufficient stock for ${product.title}`);
     }
 
-    subtotal += product.price * item.quantity;
+    // The price the buyer was shown, not the stored one: a lapsed offer has
+    // already reverted, so the line has to charge what the card said.
+    const unitPrice = sellingPriceOf(product);
+    subtotal += unitPrice * item.quantity;
     orderItems.push({
       productId: product._id,
       // The seller this line belongs to, copied now so a later product edit
@@ -131,7 +135,7 @@ async function buildOrderItems(items: CreateOrderInput["items"]) {
       vendorId: product.vendorId || null,
       storeId: product.storeId || null,
       title:     product.title,
-      price:     product.price,
+      price:     unitPrice,
       quantity:  item.quantity,
       image:     product.image || item.image || "",
     });
