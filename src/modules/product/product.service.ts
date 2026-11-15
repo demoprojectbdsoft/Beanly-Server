@@ -5,18 +5,31 @@ import { SubCategory } from "../subcategory/subcategory.model";
 import { VendorStore } from "../vendor/vendor-store.model";
 import { Order } from "../order/order.model";
 import { ApiError } from "../../utils/apiError";
-import { idVariants } from "../../utils/ids";
+import { idQuery, idVariants } from "../../utils/ids";
+import { Types } from "mongoose";
 import { CreateProductInput, UpdateProductInput, GetProductsQuery } from "./product.validator";
 import type { WarrantyType } from "../warranty/warranty.types";
 import { VENDOR_LIVE_PRODUCT_STATUSES } from "../vendor/vendor.types";
 
-/** Sort keys the shop and dashboards can ask for. */
+/**
+ * Sort keys the shop and dashboards can ask for. Every one of them ends on
+ * `_id`: a bulk import saves many rows in the same millisecond, and without the
+ * tie-break those rows swap places between pages while a reader walks them.
+ */
 const SORT_OPTIONS: Record<string, Record<string, 1 | -1>> = {
-  price_asc: { price: 1 },
-  price_desc: { price: -1 },
-  rating: { rating: -1 },
-  featured: { isFeatured: -1, createdAt: -1 },
-  newest: { createdAt: -1 },
+  rating: { rating: -1, _id: 1 },
+  featured: { isFeatured: -1, createdAt: -1, _id: 1 },
+  newest: { createdAt: -1, _id: 1 },
+  oldest: { createdAt: 1, _id: 1 },
+};
+
+/**
+ * Money sorts, and which way they run. These are not served by a stored field:
+ * they rank the price a buyer is charged (see `rankPricePage`).
+ */
+const PRICE_SORTS: Record<string, 1 | -1> = {
+  price_asc: 1,
+  price_desc: -1,
 };
 
 // Escapes regex special chars so user search input matches literally
@@ -344,11 +357,45 @@ function buildSearchCondition(search: string) {
   };
 }
 
+/**
+ * True when the document's offer deadline has gone by.
+ *
+ * Until the sweep rewrites it, a stored price still holds the sale price of an
+ * offer that is over. The deadline, not the price, is the honest reading of
+ * whether a sale is still on — the same reading `offerHasLapsed` makes.
+ */
+function offerLapsedExpr(now: Date) {
+  return {
+    $and: [
+      { $ne: [{ $ifNull: ["$offerEndDate", null] }, null] },
+      { $lte: ["$offerEndDate", now] },
+    ],
+  };
+}
+
+/** `sellingPriceOf` as a Mongo expression, for sorting and filtering on it. */
+function effectivePriceExpr(now: Date = new Date()) {
+  return {
+    $cond: [
+      {
+        $and: [
+          offerLapsedExpr(now),
+          { $gt: [{ $ifNull: ["$originalPrice", 0] }, 0] },
+        ],
+      },
+      "$originalPrice",
+      { $ifNull: ["$price", 0] },
+    ],
+  };
+}
+
+/** Matches a price range against the price a buyer is charged, not the stored one. */
 function buildPriceCondition(minPrice?: number, maxPrice?: number) {
-  const priceFilter: Record<string, number> = {};
-  if (minPrice !== undefined) priceFilter.$gte = minPrice;
-  if (maxPrice !== undefined) priceFilter.$lte = maxPrice;
-  return { price: priceFilter };
+  const bounds: any[] = [];
+  const price = effectivePriceExpr();
+  if (minPrice !== undefined) bounds.push({ $gte: [price, minPrice] });
+  if (maxPrice !== undefined) bounds.push({ $lte: [price, maxPrice] });
+  return { $expr: { $and: bounds } };
 }
 
 /**
@@ -361,11 +408,19 @@ function buildDiscountCondition(query: GetProductsQuery) {
   const min = query.minDiscount ?? (minStr ? Number(minStr) : 0);
   const max = query.maxDiscount ?? (maxStr ? Number(maxStr) : 100);
 
+  // A lapsed offer shows no discount at all, whatever the stored prices still
+  // say, so that band filter agrees with the badge on the card.
   const discountExpr = {
     $cond: [
-      { $and: [{ $gt: ["$originalPrice", "$price"] }, { $gt: ["$originalPrice", 0] }] },
-      { $round: [{ $multiply: [{ $divide: [{ $subtract: ["$originalPrice", "$price"] }, "$originalPrice"] }, 100] }, 0] },
-      { $ifNull: ["$discountPercentage", 0] },
+      offerLapsedExpr(new Date()),
+      0,
+      {
+        $cond: [
+          { $and: [{ $gt: ["$originalPrice", "$price"] }, { $gt: ["$originalPrice", 0] }] },
+          { $round: [{ $multiply: [{ $divide: [{ $subtract: ["$originalPrice", "$price"] }, "$originalPrice"] }, 100] }, 0] },
+          { $ifNull: ["$discountPercentage", 0] },
+        ],
+      },
     ],
   };
   return { $expr: { $and: [{ $gte: [discountExpr, min] }, { $lte: [discountExpr, max] }] } };
@@ -409,9 +464,15 @@ async function buildFilterConditions(
       const store = await VendorStore.findOne({
         slug: query.storeSlug.trim().toLowerCase(),
       }).select("_id").lean();
-      storeId = store ? String(store._id) : "none";
+      storeId = store ? String(store._id) : undefined;
     }
-    conditions.push({ storeId });
+    // The reference may be stored as a plain string or as an ObjectId. An id
+    // that is not one, or a slug that names no shop, narrows the query to
+    // nothing — an empty shelf, never everyone's stock and never a bad cast.
+    const target = String(storeId ?? "");
+    conditions.push(
+      Types.ObjectId.isValid(target) ? { storeId: idQuery(target) } : { storeId: { $in: [] } }
+    );
   }
 
   if (category) conditions.push(await buildCategoryCondition(category));
@@ -472,27 +533,60 @@ async function buildFilterConditions(
   return conditions;
 }
 
+/**
+ * The ids on one price-sorted page, ranked on the price a buyer is charged.
+ *
+ * A lapsed offer only rewrites its stored price when the daily sweep runs, so a
+ * sort on `price` would order rows by a number the card no longer shows. The
+ * page is picked here, on the effective price, and read back afterwards.
+ */
+async function rankPricePage(filter: any, direction: 1 | -1, skip: number, limit: number) {
+  const rows = await Product.aggregate([
+    { $match: filter },
+    { $addFields: { effectivePrice: effectivePriceExpr() } },
+    { $sort: { effectivePrice: direction, _id: 1 } },
+    { $skip: skip },
+    { $limit: limit },
+    { $project: { _id: 1 } },
+  ]);
+  return rows.map((row: any) => row._id);
+}
+
 export async function getProducts(query: GetProductsQuery, view: ProductView = "public") {
   const { page, limit, sort } = query;
 
   const conditions = await buildFilterConditions(query, { includeHidden: view === "admin" });
   const filter = conditions.length > 0 ? { $and: conditions } : {};
-  const sortCriteria = SORT_OPTIONS[sort ?? ""] ?? { createdAt: -1 };
+  // An unknown key falls back to the newest rows rather than to Mongo's natural
+  // order, which is not an order anyone asked for.
+  const sortKey = sort && (SORT_OPTIONS[sort] || PRICE_SORTS[sort]) ? sort : "newest";
   const skip = (page - 1) * limit;
-
-  const find = Product.find(filter)
-    .populate("categoryId", "name slug")
-    .populate("subCategoryIds", "name slug");
 
   // The seller's name rides along for the cards, but a page that was asked
   // for one shop already knows the shop — the join is only worth its cost
   // when the rows may come from many sellers.
-  if (!query.storeSlug && !query.storeId) find.populate("storeId", "name slug");
+  const load = (where: any) => {
+    const find = Product.find(where)
+      .populate("categoryId", "name slug")
+      .populate("subCategoryIds", "name slug");
+    if (!query.storeSlug && !query.storeId) find.populate("storeId", "name slug");
+    return find;
+  };
 
-  const [products, total] = await Promise.all([
-    find.sort(sortCriteria).skip(skip).limit(limit),
-    Product.countDocuments(filter),
-  ]);
+  const pageOfProducts = async (): Promise<any[]> => {
+    const direction = sortKey in PRICE_SORTS ? PRICE_SORTS[sortKey] : undefined;
+    if (!direction) return await load(filter).sort(SORT_OPTIONS[sortKey]).skip(skip).limit(limit);
+
+    const ids = await rankPricePage(filter, direction, skip, limit);
+    if (ids.length === 0) return [];
+    const docs = await load({ _id: { $in: ids } });
+    const byId = new Map<string, any>(docs.map((doc: any) => [String(doc._id), doc]));
+    return ids
+      .map((id) => byId.get(String(id)))
+      .filter((doc): doc is any => Boolean(doc));
+  };
+
+  const [products, total] = await Promise.all([pageOfProducts(), Product.countDocuments(filter)]);
 
   const ratingsMap = await getRatingsMap(products.map((p) => p._id.toString()));
 
