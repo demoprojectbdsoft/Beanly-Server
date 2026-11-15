@@ -35,12 +35,25 @@ import vendorCouponRoutes from "./modules/vendor/vendor-coupon.route";
 import promotionRoutes from "./modules/vendor/featured-promotion.route";
 import vendorPromotionRoutes from "./modules/vendor/vendor-promotion.route";
 import riderApplicationRoutes from "./modules/rider/rider-application.route";
+import fileRoutes from "./modules/file/file.route";
 import { errorMiddleware } from "./middlewares/error.middleware";
 import { notFound } from "./middlewares/notFound.middleware";
 
 const app = express();
 
 app.use(cors());
+
+/**
+ * Uploaded documents, mounted before the global body parser on purpose.
+ *
+ * A licence scan is megabytes where every other request is kilobytes, and
+ * `express.json()` refuses anything over a hundred of them. This mount brings
+ * its own parser, sized for one document plus the base64 overhead, so the limit
+ * stays tight everywhere else. A parser that has already read the body is left
+ * alone by the one below it.
+ */
+app.use("/api/files", express.json({ limit: "12mb" }), fileRoutes);
+
 app.use(express.json());
 
 // ── Health check ──────────────────────────────────────────────────────────────
