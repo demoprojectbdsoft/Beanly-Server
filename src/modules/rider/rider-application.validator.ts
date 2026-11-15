@@ -62,6 +62,9 @@ const vehicleSchema = z.object({
   hasOwnVehicle: z.boolean().default(true),
 });
 
+/** The vehicle types that carry a plate and a licence; a bicycle and a walk do not. */
+const MOTOR_VEHICLE_TYPES = ["motorcycle", "scooter", "car"] as const;
+
 const documentsSchema = z
   .object({
     drivingLicenseUrl: z.string().trim().max(500).optional().default(""),
@@ -105,17 +108,57 @@ const experienceSchema = z
  * before the submit button became live. The service refuses to create a
  * pending row without it, so a stray POST from a stale tab cannot open an
  * application the person never meant to send.
+ *
+ * The cross-field rule at the end is the wizard's required marks, restated
+ * where they are actually enforced: a plate, a licence number and the two
+ * papers belong to a registered vehicle, and a bicycle or a rider on foot has
+ * none of them, so asking everybody would turn away people the platform wants.
  */
-export const createRiderApplicationSchema = z.object({
-  personalInfo: personalInfoSchema,
-  contactInfo: contactInfoSchema,
-  serviceAddress: serviceAddressSchema,
-  vehicle: vehicleSchema,
-  documents: documentsSchema,
-  availability: availabilitySchema,
-  experience: experienceSchema,
-  confirm: z.boolean().default(false),
-});
+export const createRiderApplicationSchema = z
+  .object({
+    personalInfo: personalInfoSchema,
+    contactInfo: contactInfoSchema,
+    serviceAddress: serviceAddressSchema,
+    vehicle: vehicleSchema,
+    documents: documentsSchema,
+    availability: availabilitySchema,
+    experience: experienceSchema,
+    confirm: z.boolean().default(false),
+  })
+  .superRefine((value, ctx) => {
+    if (!MOTOR_VEHICLE_TYPES.includes(value.vehicle.type as (typeof MOTOR_VEHICLE_TYPES)[number])) {
+      return;
+    }
+
+    if (!value.vehicle.number) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["vehicle", "number"],
+        message: "Enter the vehicle registration number.",
+      });
+    }
+    if (!value.vehicle.licenseNumber) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["vehicle", "licenseNumber"],
+        message: "Enter your driving licence number.",
+      });
+    }
+    if (!value.documents.drivingLicenseUrl) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["documents", "drivingLicenseUrl"],
+        message: "Upload a photo of your driving licence.",
+      });
+    }
+    if (!value.documents.vehicleDocsUrl) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["documents", "vehicleDocsUrl"],
+        message: "Upload the vehicle registration papers.",
+      });
+    }
+  });
 
 /**
  * A draft save. Same shape as the submission, but every section is optional
