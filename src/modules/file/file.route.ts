@@ -14,7 +14,9 @@ const router = Router();
  */
 
 // The filename is part of the path so the browser can see the extension.
-router.get("/:id/:name?", controller.getFile);
+// Express 5 dropped the `/:name?` shorthand, so the bare id is its own route.
+router.get("/:id/:name", controller.getFile);
+router.get("/:id", controller.getFile);
 
 router.post("/", requireInternalKey, controller.uploadFile);
 

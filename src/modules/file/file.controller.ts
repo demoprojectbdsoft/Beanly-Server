@@ -88,7 +88,7 @@ export const getFile = catchAsync(async (req, res, next) => {
   const inline = isInlineFileType(file.mime);
 
   res.setHeader("Content-Type", file.mime);
-  res.setHeader("Content-Length", String(file.size));
+  res.setHeader("Content-Length", String(file.data.length));
   // The bytes never change under an id, so a browser may keep them.
   res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   // Never let the browser second-guess the declared type: a document is a
@@ -99,5 +99,7 @@ export const getFile = catchAsync(async (req, res, next) => {
     `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.name)}`
   );
 
-  return res.send(file.data);
+  // `end`, not `send`: Express rewrites the charset on some content types and
+  // would turn a PDF into text that no reader opens.
+  return res.end(file.data);
 });

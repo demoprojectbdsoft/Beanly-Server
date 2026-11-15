@@ -36,6 +36,25 @@ export const storeFile = async ({ name, mime, data, uploadedBy }: StoreFileInput
 
 /** One file, or null when it was never stored or has since been removed. */
 export const findStoredFile = async (id: string): Promise<StoredFile | null> => {
-  const file = await StoredFileModel.findById(id).lean();
-  return (file as unknown as StoredFile) ?? null;
+  /*
+   * Read through the hydrated document rather than `.lean()`.
+   *
+   * A lean read hands back the driver's binary wrapper instead of a node Buffer,
+   * and that wrapper serialises to base64 text the moment it reaches the
+   * response writer — a PDF that arrives as a page of letters. Mongoose turns a
+   * Buffer path back into a real Buffer on hydration, so the few fields that are
+   * needed are read off the document explicitly.
+   */
+  const file = await StoredFileModel.findById(id);
+  if (!file) return null;
+
+  const data = file.get("data") as Buffer;
+
+  return {
+    _id: file._id,
+    name: String(file.get("name")),
+    mime: String(file.get("mime")),
+    size: data.length,
+    data,
+  };
 };
