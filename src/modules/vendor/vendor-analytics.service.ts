@@ -146,8 +146,14 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
   const rows = await VendorOrder.find({
     vendorId: new Types.ObjectId(vendorId),
     // Anything that could still land in either window: placed recently, or moved
-    // recently even if it was placed long ago.
-    $or: [{ createdAt: { $gte: new Date(previousFrom) } }, { updatedAt: { $gte: new Date(previousFrom) } }],
+    // recently even if it was placed long ago. A parcel still on the way is
+    // read whatever its age, because it is money the seller is still owed and
+    // it must not drop out of the "on the way" figure as the window slides.
+    $or: [
+      { createdAt: { $gte: new Date(previousFrom) } },
+      { updatedAt: { $gte: new Date(previousFrom) } },
+      { status: { $in: IN_FLIGHT_STATUSES } },
+    ],
   })
     .select("status subtotal items createdAt updatedAt history orderNumber city")
     .lean();

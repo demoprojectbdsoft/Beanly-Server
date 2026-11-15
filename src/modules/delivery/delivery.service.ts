@@ -279,6 +279,9 @@ export async function getRiderStats(riderId: string, query: RiderStatsQuery) {
   let pendingRequests = 0;
   let completed = 0;
   let cancelled = 0;
+  // A job cancelled before the rider accepted it never reached their hands:
+  // it is a stopped offer, not a failed delivery, so it stays out of the rate.
+  let cancelledAfterStart = 0;
   let deliveryMinutes = 0;
   let deliverySamples = 0;
 
@@ -321,6 +324,7 @@ export async function getRiderStats(riderId: string, query: RiderStatsQuery) {
 
     if (status === "cancelled") {
       cancelled++;
+      if (delivery.acceptedAt) cancelledAfterStart++;
       const cancelledAt = delivery.cancelledAt ? new Date(delivery.cancelledAt) : null;
       if (cancelledAt) {
         const bucket = daySeries.get(dayKey(cancelledAt));
@@ -329,7 +333,12 @@ export async function getRiderStats(riderId: string, query: RiderStatsQuery) {
     }
   }
 
-  const finished = completed + cancelled;
+  /*
+   * Only the jobs that actually got going can pass or fail: a rider cannot
+   * cancel (the store and the customer own both ways a job stops), so a job
+   * cancelled while it was still an unanswered offer says nothing about them.
+   */
+  const finished = completed + cancelledAfterStart;
   const successRate = finished > 0 ? Math.round((completed / finished) * 100) : 0;
   const avgDeliveryMinutes = deliverySamples > 0 ? Math.round(deliveryMinutes / deliverySamples) : 0;
 
@@ -341,7 +350,12 @@ export async function getRiderStats(riderId: string, query: RiderStatsQuery) {
 
   return {
     stats: {
-      totalDeliveries: deliveries.length,
+      /*
+       * An offer the rider declined was never their delivery: the row keeps
+       * their id for the history, so counting every row would inflate the job
+       * count with parcels they never touched.
+       */
+      totalDeliveries: deliveries.length - (statusCounts.declined || 0),
       completed,
       active: activeCount,
       pendingRequests,
