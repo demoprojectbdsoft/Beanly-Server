@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import { VendorOrder, type VendorOrderStatus } from "./vendor-order.model";
 import { getVendorPlanState, vendorCommission } from "./vendor-subscription.service";
+import { getEngagementReport } from "../product-engagement/product-engagement.service";
 import type { VendorAnalyticsQuery } from "./vendor-analytics.validator";
 
 /**
@@ -35,6 +36,13 @@ const TOP_BY_LEVEL: Record<string, number> = {
   detailed: 10,
   advanced: 20,
 };
+
+/**
+ * Engagement — views, clicks and wishlist placement — is the advanced rung's
+ * own read. Free and Premium sell a sales report; the traffic picture is what
+ * the top plan adds on top of it.
+ */
+const ENGAGEMENT_LEVELS = ["advanced"];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -226,6 +234,13 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
 
   const commissionTaken = Math.round(current.revenue * (commission / 100) * 100) / 100;
 
+  // The top rung also sees the traffic: which listings were opened, which were
+  // pressed, and which were saved for later. It is the same window as the money,
+  // so the two halves of the page describe one period.
+  const engagement = ENGAGEMENT_LEVELS.includes(level)
+    ? await getEngagementReport({ range, limit: topLimit, vendorId })
+    : null;
+
   return {
     range,
     maxRange,
@@ -264,6 +279,7 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
     }),
     statusCounts,
     topProducts,
+    engagement,
     recent: [...placed]
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 8)
