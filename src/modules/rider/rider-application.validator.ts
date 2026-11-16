@@ -110,9 +110,11 @@ const experienceSchema = z
  * application the person never meant to send.
  *
  * The cross-field rule at the end is the wizard's required marks, restated
- * where they are actually enforced: a plate, a licence number and the two
- * papers belong to a registered vehicle, and a bicycle or a rider on foot has
- * none of them, so asking everybody would turn away people the platform wants.
+ * where they are actually enforced: a plate and a licence number belong to a
+ * registered vehicle, and a bicycle or a rider on foot has neither, so asking
+ * everybody would turn away people the platform wants. The uploaded papers are
+ * deliberately not required — the review desk asks for them when it needs
+ * them.
  */
 export const createRiderApplicationSchema = z
   .object({
@@ -142,20 +144,6 @@ export const createRiderApplicationSchema = z
         code: "custom",
         path: ["vehicle", "licenseNumber"],
         message: "Enter your driving licence number.",
-      });
-    }
-    if (!value.documents.drivingLicenseUrl) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["documents", "drivingLicenseUrl"],
-        message: "Upload a photo of your driving licence.",
-      });
-    }
-    if (!value.documents.vehicleDocsUrl) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["documents", "vehicleDocsUrl"],
-        message: "Upload the vehicle registration papers.",
       });
     }
   });
