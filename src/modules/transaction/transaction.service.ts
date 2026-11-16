@@ -134,7 +134,9 @@ export async function getVendorTransactions(vendorId: string, query: GetTransact
   const [transactions, total] = await Promise.all([
     Transaction.find(filter)
       .populate("userId", "name email image avatar")
-      .populate("orderId")
+      // Only the two fields the seller's ledger prints. A parent order carries
+      // every shop's lines, and the rest of it is not theirs to read.
+      .populate({ path: "orderId", select: "_id orderStatus" })
       .sort(sortCriteria)
       .skip(skip)
       .limit(limit)
