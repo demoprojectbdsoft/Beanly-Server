@@ -13,7 +13,7 @@ import type { CheckoutSubscriptionInput } from "./vendor-subscription.validator"
 import {
   VENDOR_LIVE_PRODUCT_STATUSES,
   billingDays,
-  planPrice,
+  planEffectivePrice,
   planRank,
   type BillingCycle,
   type VendorPlan,
@@ -260,7 +260,7 @@ interface StartSubscriptionInput {
 export async function startSubscription(input: StartSubscriptionInput) {
   const plan = await getPlan(input.planId);
   const days = billingDays(input.billingCycle);
-  const price = input.pricePaid ?? planPrice(plan, input.billingCycle);
+  const price = input.pricePaid ?? planEffectivePrice(plan, input.billingCycle);
 
   return withTransaction(async (session) => {
     const now = new Date();
@@ -500,7 +500,9 @@ export async function checkoutSubscription(
   }
 
   const state = await getVendorPlanState(vendorId);
-  const price = planPrice(plan, input.billingCycle);
+  // A running offer lowers what this period costs; the list price stays on the
+  // row so the vendor's history can still show the full figure.
+  const price = planEffectivePrice(plan, input.billingCycle);
   const purpose = purchasePurpose(state, plan);
 
   if (input.idempotencyKey) {

@@ -102,12 +102,22 @@ export interface VendorPlanLimits {
   activeCoupons: number;
   analytics: "basic" | "detailed" | "advanced";
   salesReports: "basic" | "advanced";
-  exports: "limited" | "full";
+  exports: PlanExports;
   storeCustomization: "basic" | "enhanced" | "full";
   promotionalCampaigns: "none" | "limited" | "priority";
   storeVisibility: "standard" | "enhanced" | "priority";
   support: "standard" | "priority";
 }
+
+/**
+ * What a plan may export.
+ *
+ * Three rungs, not two: the free shop gets no file, the paid plan writes the
+ * CSV, and the top plan also builds the PDF — exactly what the report screen
+ * offers and what the pricing cards promise.
+ */
+export const PLAN_EXPORTS = ["none", "csv", "csv+pdf"] as const;
+export type PlanExports = (typeof PLAN_EXPORTS)[number];
 
 export interface VendorPlan extends VendorPlanLimits {
   id: VendorPlanId;
@@ -128,6 +138,12 @@ export interface VendorPlan extends VendorPlanLimits {
   billingCycles?: BillingCycle[];
   /** Where the plan sits in the admin's list and on the pricing cards. */
   sortOrder?: number;
+  /** A price offer, applied while `offerEndsAt` has not passed. */
+  offerPercent?: number;
+  offerReason?: string;
+  offerEndsAt?: string | null;
+  /** Decided on the server when the plan is read, so a screen never guesses. */
+  offerActive?: boolean;
 }
 
 /**
@@ -146,7 +162,7 @@ export const DEFAULT_VENDOR_PLANS: Record<string, VendorPlan> = {
     activeCoupons: 2,
     analytics: "basic",
     salesReports: "basic",
-    exports: "limited",
+    exports: "none",
     storeCustomization: "basic",
     promotionalCampaigns: "none",
     storeVisibility: "standard",
@@ -171,7 +187,7 @@ export const DEFAULT_VENDOR_PLANS: Record<string, VendorPlan> = {
     activeCoupons: 10,
     analytics: "detailed",
     salesReports: "advanced",
-    exports: "full",
+    exports: "csv",
     storeCustomization: "enhanced",
     promotionalCampaigns: "limited",
     storeVisibility: "enhanced",
@@ -198,7 +214,7 @@ export const DEFAULT_VENDOR_PLANS: Record<string, VendorPlan> = {
     activeCoupons: 30,
     analytics: "advanced",
     salesReports: "advanced",
-    exports: "full",
+    exports: "csv+pdf",
     storeCustomization: "full",
     promotionalCampaigns: "priority",
     storeVisibility: "priority",
@@ -220,6 +236,38 @@ export const DEFAULT_VENDOR_PLANS: Record<string, VendorPlan> = {
 /** Price of one billing period for a plan. */
 export function planPrice(plan: VendorPlan, cycle: BillingCycle): number {
   return cycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
+}
+
+/**
+ * True while a plan's price offer is running.
+ *
+ * An offer with no deadline runs until the store team clears it; a deadline in
+ * the past is history, so the full price comes back without anyone editing the
+ * row again.
+ */
+export function planOfferActive(
+  plan: Pick<VendorPlan, "offerPercent" | "offerEndsAt">,
+  now: number = Date.now()
+): boolean {
+  const percent = Number(plan.offerPercent) || 0;
+  if (percent <= 0 || percent >= 100) return false;
+  if (!plan.offerEndsAt) return true;
+  const ends = new Date(plan.offerEndsAt).getTime();
+  return Number.isFinite(ends) && ends > now;
+}
+
+/**
+ * What one period costs today.
+ *
+ * The discount is a percentage of the plan's own price, so it follows a price
+ * edit instead of freezing an old amount. The checkout charges this figure and
+ * the cards print it, so the two can never disagree.
+ */
+export function planEffectivePrice(plan: VendorPlan, cycle: BillingCycle): number {
+  const price = planPrice(plan, cycle);
+  if (price <= 0 || !planOfferActive(plan)) return price;
+  const percent = Number(plan.offerPercent) || 0;
+  return Math.round(price * (1 - percent / 100) * 100) / 100;
 }
 
 /** How many days a billing period covers. */

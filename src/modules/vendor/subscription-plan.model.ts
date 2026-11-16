@@ -24,7 +24,7 @@ const subscriptionPlanSchema = new Schema(
 
     analytics: { type: String, enum: ["basic", "detailed", "advanced"], required: true },
     salesReports: { type: String, enum: ["basic", "advanced"], required: true },
-    exports: { type: String, enum: ["limited", "full"], required: true },
+    exports: { type: String, enum: ["none", "csv", "csv+pdf"], required: true },
     storeCustomization: { type: String, enum: ["basic", "enhanced", "full"], required: true },
     promotionalCampaigns: { type: String, enum: ["none", "limited", "priority"], required: true },
     storeVisibility: { type: String, enum: ["standard", "enhanced", "priority"], required: true },
@@ -42,6 +42,15 @@ const subscriptionPlanSchema = new Schema(
 
     /** Where the plan sits in the admin list and on the pricing cards. */
     sortOrder: { type: Number, default: 0 },
+
+    /**
+     * A price offer the store team can run without editing the real price.
+     * `offerPercent` is applied to both cycles while `offerEndsAt` is ahead; a
+     * null deadline keeps the offer open until it is cleared.
+     */
+    offerPercent: { type: Number, default: 0, min: 0, max: 100 },
+    offerReason: { type: String, default: "", trim: true, maxlength: 200 },
+    offerEndsAt: { type: Date, default: null },
 
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },

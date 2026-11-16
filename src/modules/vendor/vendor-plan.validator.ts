@@ -18,7 +18,7 @@ const planFields = z.object({
   activeCoupons: z.coerce.number().int().min(0).optional(),
   analytics: z.enum(["basic", "detailed", "advanced"]).optional(),
   salesReports: z.enum(["basic", "advanced"]).optional(),
-  exports: z.enum(["limited", "full"]).optional(),
+  exports: z.enum(["none", "csv", "csv+pdf"]).optional(),
   storeCustomization: z.enum(["basic", "enhanced", "full"]).optional(),
   promotionalCampaigns: z.enum(["none", "limited", "priority"]).optional(),
   storeVisibility: z.enum(["standard", "enhanced", "priority"]).optional(),
@@ -29,6 +29,10 @@ const planFields = z.object({
   gracePeriodDays: z.coerce.number().int().min(0).max(90).optional(),
   billingCycles: z.array(z.enum(["monthly", "yearly"])).min(1).optional(),
   sortOrder: z.coerce.number().int().min(0).optional(),
+  /** A dated price offer; null clears the deadline instead of the offer. */
+  offerPercent: z.coerce.number().min(0).max(99).optional(),
+  offerReason: z.string().trim().max(200).optional(),
+  offerEndsAt: z.coerce.date().nullable().optional(),
 });
 
 /** An admin's edit to one plan; every field is optional. */

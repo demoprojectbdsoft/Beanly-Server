@@ -4,7 +4,9 @@ import { VendorSubscription } from "./vendor-subscription.model";
 import {
   DEFAULT_VENDOR_PLANS,
   VENDOR_PLAN_IDS,
+  planOfferActive,
   type BillingCycle,
+  type PlanExports,
   type VendorPlan,
 } from "./vendor.types";
 
@@ -29,7 +31,7 @@ const BLANK_PLAN = {
   activeCoupons: 0,
   analytics: "basic",
   salesReports: "basic",
-  exports: "limited",
+  exports: "none",
   storeCustomization: "basic",
   promotionalCampaigns: "none",
   storeVisibility: "standard",
@@ -40,7 +42,23 @@ const BLANK_PLAN = {
   gracePeriodDays: 0,
   billingCycles: ["monthly", "yearly"] as BillingCycle[],
   sortOrder: 0,
+  offerPercent: 0,
+  offerReason: "",
+  offerEndsAt: null,
 } satisfies Omit<VendorPlan, "id">;
+
+/**
+ * Reads the export rung from rows written before the three rungs existed.
+ *
+ * "limited" was a totals-and-chart file, so the free rung keeps no file at all
+ * while any paid row keeps the CSV; "full" always meant the PDF as well.
+ */
+function normalizeExports(value: unknown, planId: string): PlanExports {
+  if (value === "none" || value === "csv" || value === "csv+pdf") return value;
+  if (value === "full") return "csv+pdf";
+  if (value === "limited") return planId === "free" ? "none" : "csv";
+  return "none";
+}
 
 /** Turns one stored row into the shape the rest of the app uses. */
 function fromRow(row: any): VendorPlan {
@@ -57,7 +75,7 @@ function fromRow(row: any): VendorPlan {
     activeCoupons: Number(row.activeCoupons ?? fallback.activeCoupons) || 0,
     analytics: row.analytics ?? fallback.analytics,
     salesReports: row.salesReports ?? fallback.salesReports,
-    exports: row.exports ?? fallback.exports,
+    exports: normalizeExports(row.exports ?? fallback.exports, String(row.planId)),
     storeCustomization: row.storeCustomization ?? fallback.storeCustomization,
     promotionalCampaigns: row.promotionalCampaigns ?? fallback.promotionalCampaigns,
     storeVisibility: row.storeVisibility ?? fallback.storeVisibility,
@@ -68,6 +86,17 @@ function fromRow(row: any): VendorPlan {
     gracePeriodDays: Number(row.gracePeriodDays ?? fallback.gracePeriodDays) || 0,
     billingCycles: row.billingCycles?.length ? row.billingCycles : fallback.billingCycles,
     sortOrder: Number(row.sortOrder ?? fallback.sortOrder) || 0,
+    offerPercent: Number(row.offerPercent ?? fallback.offerPercent) || 0,
+    offerReason: row.offerReason ?? fallback.offerReason ?? "",
+    offerEndsAt: row.offerEndsAt
+      ? new Date(row.offerEndsAt).toISOString()
+      : fallback.offerEndsAt ?? null,
+    offerActive: planOfferActive({
+      offerPercent: Number(row.offerPercent ?? fallback.offerPercent) || 0,
+      offerEndsAt: row.offerEndsAt
+        ? new Date(row.offerEndsAt).toISOString()
+        : fallback.offerEndsAt ?? null,
+    }),
   };
 }
 
@@ -165,6 +194,9 @@ export interface PlanInput {
   gracePeriodDays?: number;
   billingCycles?: string[];
   sortOrder?: number;
+  offerPercent?: number;
+  offerReason?: string;
+  offerEndsAt?: Date | null;
 }
 
 const WRITABLE_FIELDS = [
@@ -188,6 +220,9 @@ const WRITABLE_FIELDS = [
   "gracePeriodDays",
   "billingCycles",
   "sortOrder",
+  "offerPercent",
+  "offerReason",
+  "offerEndsAt",
 ] as const;
 
 /** Copies only the fields that were sent, so a partial edit stays partial. */
