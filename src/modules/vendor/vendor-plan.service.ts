@@ -50,12 +50,14 @@ const BLANK_PLAN = {
 /**
  * Reads the export rung from rows written before the three rungs existed.
  *
- * "limited" was a totals-and-chart file, so the free rung keeps no file at all
- * while any paid row keeps the CSV; "full" always meant the PDF as well.
+ * The old ladder had two values, and every seeded plan carried one of them:
+ * free "limited", Premium "full", Advanced "full". "Full" there meant a
+ * complete file, not a PDF — so only the top rung keeps the PDF, and Premium,
+ * which buys a spreadsheet and nothing else, lands on the CSV rung.
  */
 function normalizeExports(value: unknown, planId: string): PlanExports {
   if (value === "none" || value === "csv" || value === "csv+pdf") return value;
-  if (value === "full") return "csv+pdf";
+  if (value === "full") return planId === "advanced" ? "csv+pdf" : "csv";
   if (value === "limited") return planId === "free" ? "none" : "csv";
   return "none";
 }
