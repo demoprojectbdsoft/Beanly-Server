@@ -33,6 +33,7 @@ import vendorSubscriptionRoutes from "./modules/vendor/vendor-subscription.route
 import vendorOrderRoutes from "./modules/vendor/vendor-order.route";
 import vendorAnalyticsRoutes from "./modules/vendor/vendor-analytics.route";
 import vendorCouponRoutes from "./modules/vendor/vendor-coupon.route";
+import vendorDeskRoutes from "./modules/vendor/vendor-desk.route";
 import promotionRoutes from "./modules/vendor/featured-promotion.route";
 import vendorPromotionRoutes from "./modules/vendor/vendor-promotion.route";
 import riderApplicationRoutes from "./modules/rider/rider-application.route";
@@ -96,6 +97,7 @@ app.use("/api/vendor-products", vendorProductRoutes);
 app.use("/api/vendor-subscription", vendorSubscriptionRoutes);
 app.use("/api/vendor-orders", vendorOrderRoutes);
 app.use("/api/vendor-analytics", vendorAnalyticsRoutes);
+app.use("/api/vendor-desk", vendorDeskRoutes);
 app.use("/api/vendor-coupons", vendorCouponRoutes);
 app.use("/api/promotions", promotionRoutes);
 app.use("/api/vendor-promotions", vendorPromotionRoutes);
