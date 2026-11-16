@@ -53,18 +53,6 @@ export const DEFAULT_BRAND: MailBrand = {
   fontFamily: "Arial, Helvetica, sans-serif",
 };
 
-/** Link to the customer's own orders, where claims and coverage live. */
-function ordersUrl(brand?: MailBrand): string {
-  const base = (brand?.siteUrl || "").replace(/\/+$/, "");
-  return base ? `${base}/dashboard/customer/orders` : "";
-}
-
-/** Link to the admin warranty screen, used by the emails sent to the store. */
-function adminWarrantiesUrl(brand?: MailBrand): string {
-  const base = (brand?.siteUrl || "").replace(/\/+$/, "");
-  return base ? `${base}/dashboard/admin/warranties` : "";
-}
-
 /**
  * One button. Drawn as a link on a coloured block, because a real <button>
  * does nothing in a mail client.
@@ -142,178 +130,7 @@ function row(label: string, value?: string | number | null): string {
   return `<p style="margin:0 0 6px"><strong>${esc(label)}:</strong> ${esc(value)}</p>`;
 }
 
-/* ── 1. A customer filed a claim, so the store inbox needs the details ── */
-
-export interface ClaimSubmittedMailInput {
-  storeName: string;
-  /** Site Settings colours and logo. Falls back to DEFAULT_BRAND. */
-  brand?: MailBrand;
-  customerName?: string;
-  customerEmail?: string;
-  orderNumber?: string;
-  productTitle?: string;
-  reason: string;
-  description: string;
-  images?: string[];
-}
-
-export function claimSubmittedEmail(data: ClaimSubmittedMailInput) {
-  const heading = `New warranty claim — ${data.storeName}`;
-
-  const images = (data.images || [])
-    .map(
-      (url) =>
-        `<li><a href="${esc(url)}" style="color:${esc(
-          data.brand?.primary || DEFAULT_BRAND.primary
-        )}">${esc(url)}</a></li>`
-    )
-    .join("");
-
-  const body = `
-    <p style="margin:0 0 14px">A customer submitted a warranty claim.</p>
-    ${row("Customer", data.customerName || "Customer")}
-    ${row("Email", data.customerEmail || "—")}
-    ${row("Order", data.orderNumber)}
-    ${row("Product", data.productTitle)}
-    ${row("Reason", data.reason)}
-    <p style="margin:14px 0 6px"><strong>Description</strong></p>
-    <p style="margin:0 0 14px;white-space:pre-line;background:#f9fafb;border:1px solid #eef1f4;border-radius:8px;padding:12px">${esc(
-      data.description
-    )}</p>
-    ${images ? `<p style="margin:0 0 6px"><strong>Photos</strong></p><ul style="margin:0 0 14px">${images}</ul>` : ""}
-    <p style="margin:0">Open the admin dashboard to review or resolve the claim.</p>`;
-
-  return {
-    subject: heading,
-    html: layout(heading, body, {
-      brand: data.brand,
-      actionLabel: "Open the warranty dashboard",
-      actionHref: adminWarrantiesUrl(data.brand),
-    }),
-  };
-}
-
-/* ── 2. An admin moved the claim, so the customer is told what happens next ── */
-
-export interface ClaimUpdatedMailInput {
-  storeName: string;
-  brand?: MailBrand;
-  customerName?: string;
-  productTitle?: string;
-  orderNumber?: string;
-  statusLabel: string;
-  adminNote?: string;
-  resolution?: string;
-}
-
-export function claimUpdatedEmail(data: ClaimUpdatedMailInput) {
-  const subject = `Update on your warranty claim — ${data.storeName}`;
-
-  const body = `
-    <p style="margin:0 0 14px">Hello ${esc(data.customerName || "there")},</p>
-    <p style="margin:0 0 14px">Your warranty claim status is now <strong>${esc(
-      data.statusLabel
-    )}</strong>.</p>
-    ${row("Product", data.productTitle)}
-    ${row("Order", data.orderNumber)}
-    ${
-      data.adminNote
-        ? `<p style="margin:14px 0 6px"><strong>Message from the store</strong></p>
-           <p style="margin:0 0 14px;white-space:pre-line;background:#f9fafb;border:1px solid #eef1f4;border-radius:8px;padding:12px">${esc(
-             data.adminNote
-           )}</p>`
-        : ""
-    }
-    ${
-      data.resolution
-        ? `<p style="margin:14px 0 6px"><strong>Resolution</strong></p>
-           <p style="margin:0 0 14px;white-space:pre-line;background:#ecfdf5;border:1px solid #d1fae5;border-radius:8px;padding:12px">${esc(
-             data.resolution
-           )}</p>`
-        : ""
-    }
-    <p style="margin:0">You can follow the claim from your orders page in your account.</p>`;
-
-  return {
-    subject,
-    html: layout(subject, body, {
-      brand: data.brand,
-      actionLabel: "View your orders",
-      actionHref: ordersUrl(data.brand),
-    }),
-  };
-}
-
-/* ── 3. Delivery created the coverage, so the customer gets it in writing ── */
-
-export interface WarrantyIssuedMailInput {
-  storeName: string;
-  brand?: MailBrand;
-  customerName?: string;
-  productTitle?: string;
-  orderNumber?: string;
-  typeLabel?: string;
-  months?: number;
-  expiryDate?: string;
-  terms?: string;
-}
-
-export function warrantyIssuedEmail(data: WarrantyIssuedMailInput) {
-  const subject = `Your warranty is active — ${data.storeName}`;
-
-  const body = `
-    <p style="margin:0 0 14px">Hello ${esc(data.customerName || "there")},</p>
-    <p style="margin:0 0 14px">Your order was delivered, so the warranty below is now active.</p>
-    ${row("Product", data.productTitle)}
-    ${row("Order", data.orderNumber)}
-    ${row("Type", data.typeLabel)}
-    ${row("Covered for", data.months ? `${data.months} month${data.months === 1 ? "" : "s"}` : "")}
-    ${row("Valid until", data.expiryDate)}
-    ${
-      data.terms
-        ? `<p style="margin:14px 0 6px"><strong>What is covered</strong></p>
-           <p style="margin:0 0 14px;white-space:pre-line;background:#f9fafb;border:1px solid #eef1f4;border-radius:8px;padding:12px">${esc(
-             data.terms
-           )}</p>`
-        : ""
-    }
-    <p style="margin:0">If the product develops a problem, open the order in your account and use the claim form.</p>`;
-
-  return {
-    subject,
-    html: layout(subject, body, {
-      brand: data.brand,
-      actionLabel: "View your warranty",
-      actionHref: ordersUrl(data.brand),
-    }),
-  };
-}
-
-/* ── 4. An admin writes to the customer by hand about a warranty ── */
-
-export interface CustomMessageMailInput {
-  brand?: MailBrand;
-  customerName?: string;
-  message: string;
-}
-
-/**
- * Wraps a message an admin typed in the warranty screen. The subject is chosen
- * by the admin, so only the body is built here.
- */
-export function customMessageEmail(data: CustomMessageMailInput): string {
-  const body = `
-    <p style="margin:0 0 14px">Hello ${esc(data.customerName || "there")},</p>
-    <div style="margin:0 0 14px;white-space:pre-line">${esc(data.message)}</div>`;
-
-  return layout("A message about your warranty", body, {
-    brand: data.brand,
-    actionLabel: "View your warranty",
-    actionHref: ordersUrl(data.brand),
-  });
-}
-
-/* ── 5. The admin answers a contact message from the dashboard ── */
+/* ── 1. The admin answers a contact message from the dashboard ── */
 
 export interface VisitorReplyMailInput {
   brand?: MailBrand;
@@ -340,7 +157,7 @@ export function visitorReplyEmail(data: VisitorReplyMailInput): string {
   });
 }
 
-/* ── 6. A visitor wrote from the contact page, so the inbox gets the details ── */
+/* ── 2. A visitor wrote from the contact page, so the inbox gets the details ── */
 
 export interface ContactMessageMailInput {
   storeName: string;
@@ -383,50 +200,7 @@ export function contactMessageEmail(data: ContactMessageMailInput) {
   return { subject, html: layout(subject, body, { brand: data.brand }) };
 }
 
-/* ── 7. An admin added months to a warranty, so the customer is told ── */
-
-export interface WarrantyExtendedMailInput {
-  storeName: string;
-  brand?: MailBrand;
-  customerName?: string;
-  productTitle?: string;
-  orderNumber?: string;
-  typeLabel?: string;
-  months: number;
-  previousExpiryDate: string;
-  newExpiryDate: string;
-  reason: string;
-}
-
-export function warrantyExtendedEmail(data: WarrantyExtendedMailInput) {
-  const item = data.productTitle || `order ${data.orderNumber || ""}`.trim();
-  const subject = `Warranty extended for ${item} — ${data.storeName}`;
-  const months = `${data.months} month${data.months === 1 ? "" : "s"}`;
-
-  const body = `
-    <p style="margin:0 0 14px">Hello ${esc(data.customerName || "there")},</p>
-    <p style="margin:0 0 14px">We have extended the warranty on <strong>${esc(
-      item
-    )}</strong> by <strong>${esc(months)}</strong>. Nothing is needed from you — the same claim form is used, and it will accept claims until the new date.</p>
-    ${row("Warranty type", data.typeLabel)}
-    ${row("Order number", data.orderNumber)}
-    ${row("Previous expiry", data.previousExpiryDate)}
-    ${row("New expiry", data.newExpiryDate)}
-    ${row("Extra cover", months)}
-    ${row("Reason", data.reason)}
-    <p style="margin:0">You can check this at any time under My Account → Orders → Warranty.</p>`;
-
-  return {
-    subject,
-    html: layout(subject, body, {
-      brand: data.brand,
-      actionLabel: "View your warranty",
-      actionHref: ordersUrl(data.brand),
-    }),
-  };
-}
-
-/* ── 8. A customer asked for a password reset link ── */
+/* ── 3. A customer asked for a password reset link ── */
 
 export interface PasswordResetMailInput {
   brand?: MailBrand;
@@ -461,7 +235,7 @@ export function passwordResetEmail(data: PasswordResetMailInput) {
   };
 }
 
-/* ── 9. Order and delivery updates, for the customer and the rider ── */
+/* ── 4. Order and delivery updates, for the customer and the rider ── */
 
 export interface DeliveryUpdateMailInput {
   brand?: MailBrand;

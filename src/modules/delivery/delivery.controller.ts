@@ -157,8 +157,8 @@ export const getOrderDeliveries = catchAsync(async (req, res) => {
 
 /**
  * The scheduled sweep that closes offers nobody answered. A guarded admin call
- * and a cron call both land here, which is the same pattern the warranty expiry
- * job uses.
+ * and a cron call both land here, which is the same pattern the vendor period
+ * and promotion sweeps use.
  */
 export const expireDeliveries = catchAsync(async (_req, res) => {
   const result = await deliveryService.expireStaleDeliveries();

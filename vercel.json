@@ -12,10 +12,6 @@
       "schedule": "0 18 * * *"
     },
     {
-      "path": "/api/warranties/expire",
-      "schedule": "30 18 * * *"
-    },
-    {
       "path": "/api/deliveries/expire",
       "schedule": "0 18 * * *"
     },

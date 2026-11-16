@@ -24,7 +24,7 @@ function firstAddress(...values: (string | undefined | null)[]): string {
 
 /**
  * Who the store is, for the emails the API sends: the name, the two inboxes the
- * warranty notifications and the contact page deliver to, and the look of the
+ * order notifications and the contact page deliver to, and the look of the
  * message itself.
  *
  * The dashboard owns these values, so the owner can change them without a

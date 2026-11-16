@@ -14,8 +14,8 @@ function isCronInvocation(req: Request) {
 
 /**
  * Lets a scheduled job through, or a signed-in store admin calling the same
- * route by hand. Used by the demo restore job and the warranty expiry sweep,
- * both of which need to run on a host without a long-lived process.
+ * route by hand. Used by the demo restore job and the delivery sweep, both of
+ * which need to run on a host without a long-lived process.
  */
 export function requireCronOrAdmin(req: Request, res: Response, next: NextFunction) {
   if (isCronInvocation(req)) return next();

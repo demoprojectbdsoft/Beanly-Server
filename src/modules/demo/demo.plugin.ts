@@ -14,7 +14,6 @@ export const TRACKED = [
   "orders",
   "orderstatuslogs",
   "transactions",
-  "warranties",
   "messages",
   "sitesettings",
   // Better-Auth stores accounts in "user" (singular). Tracked because the users

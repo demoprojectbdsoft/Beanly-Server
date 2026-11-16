@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { objectIdSchema } from "../../utils/ids";
-// The warranty type list lives with the warranty rules, so the product form and
-// the claim rules can never disagree about which codes exist.
+// The warranty type list lives in one place, so the product form, the vendor
+// form and the product page can never disagree about which codes exist.
 import { WARRANTY_TYPE_VALUES } from "../warranty/warranty.types";
 
 const objectId = objectIdSchema("Invalid ID");

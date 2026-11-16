@@ -13,7 +13,6 @@ export const STORE_ACTIVITY_TYPES = [
   "user",
   "user_deleted",
   "order_cancelled",
-  "warranty",
   "message",
   "review",
   // A delivery was offered, accepted, declined or stopped.

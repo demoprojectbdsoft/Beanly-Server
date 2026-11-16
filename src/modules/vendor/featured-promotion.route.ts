@@ -12,7 +12,7 @@ const router = Router();
  * The store team's promotions board.
  *
  * The sweep is kept above the admin block so Vercel Cron, which carries no user
- * token, can reach it — the same shape the warranty and delivery desks use.
+ * token, can reach it — the same shape the delivery and vendor period desks use.
  */
 router.get("/expire", requireCronOrAdmin, controller.expirePromotions);
 

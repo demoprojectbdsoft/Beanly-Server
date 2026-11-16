@@ -80,8 +80,8 @@ const productSchema = new Schema(
 
     /**
      * Warranty period for this product, in months.
-     * When set, a warranty record is created for each delivered order containing
-     * this product. 0 or undefined means the product is not covered by warranty.
+     * This is the cover promised on the product page, counted from delivery.
+     * 0 or undefined means the product is not covered by warranty.
      */
     warrantyPeriodMonths: { type: Number, default: 0, min: 0 },
     warrantyType: {

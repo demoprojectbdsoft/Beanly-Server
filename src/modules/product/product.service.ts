@@ -234,8 +234,8 @@ export function formatProduct(product: any, options: FormatProductOptions = {}) 
 /**
  * The two warranty fields describe one promise, so they are settled together:
  *
- *   - "No warranty" drops the period, so a leftover number can never create a
- *     record when the order is delivered.
+ *   - "No warranty" drops the period, so a leftover number can never promise
+ *     cover on the product page.
  *   - A period of 0 with a covering type is stored as "No warranty" too,
  *     because cover with no end date is not something anyone can honour.
  *   - "Other" is whatever the terms text says, so it needs that text.

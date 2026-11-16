@@ -4,7 +4,6 @@ import { ENV } from "./config/env";
 
 import cron from "node-cron";
 import { restoreDemoChanges } from "./modules/demo/demo.service";
-import { expireStaleWarranties } from "./modules/warranty/warranty.service";
 import { expireStaleDeliveries } from "./modules/delivery/delivery.service";
 import { expireDueSubscriptions } from "./modules/vendor/vendor-subscription.service";
 import { expireDuePromotions } from "./modules/vendor/featured-promotion.service";
@@ -51,21 +50,6 @@ async function startServer() {
         console.log("[CRON] ✅ Demo data restored successfully:", result);
       } catch (err) {
         console.error("[CRON] ❌ Failed to restore demo data:", err);
-      }
-    },
-    { timezone }
-  );
-
-  // Warranty expiry runs on its own schedule so a failing restore can never skip
-  // it. The same sweep is exposed as GET /api/warranties/expire for Vercel Cron.
-  cron.schedule(
-    "30 0 * * *",
-    async () => {
-      try {
-        const expired = await expireStaleWarranties();
-        console.log("[CRON] ⏳ Stale warranties expired:", expired);
-      } catch (err) {
-        console.error("[CRON] ❌ Failed to expire warranties:", err);
       }
     },
     { timezone }
@@ -127,7 +111,7 @@ async function startServer() {
   app.listen(ENV.PORT, () => {
     console.log(`Server running on port ${ENV.PORT}`);
     console.log(
-      `[CRON] Demo restore 12:00 AM · warranties 12:30 AM · vendor periods 12:45 AM · placements 1:00 AM · deliveries every 10 min`
+      `[CRON] Demo restore 12:00 AM · vendor periods 12:45 AM · placements 1:00 AM · deliveries every 10 min`
     );
   });
 }

@@ -99,7 +99,7 @@ const ORDER_STATUS_COPY: Record<
     type: "order_delivered",
     title: "Order delivered",
     heading: "Your order has been delivered",
-    intro: "Thanks for shopping with us. Your warranty records are ready in your account.",
+    intro: "Thanks for shopping with us. We hope the item serves you well.",
     email: true,
   },
   cancelled: {

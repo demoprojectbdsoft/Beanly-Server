@@ -1220,7 +1220,7 @@ export async function advanceDelivery(riderId: string, id: string, input: RiderS
  * Closes a job with the customer's code.
  *
  * The code is checked first, then the order is settled (stock, points,
- * warranties, payment), and only then does the delivery become `delivered`.
+ * payment), and only then does the delivery become `delivered`.
  * Order first is what makes a retry safe: closing an already-delivered order is
  * a no-op, so a failed second step can simply be repeated.
  *

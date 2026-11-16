@@ -12,11 +12,6 @@ import { isAllowedTransition, nextStatuses } from "./order.flow";
 import { logOrderStatus } from "../order-status/order-status.service";
 import { createTransaction, getLatestTransactionForOrder } from "../transaction/transaction.service";
 import { getSiteSettings } from "../site-settings/site-settings.service";
-import { createWarrantiesForOrder, voidWarrantiesForOrder } from "../warranty/warranty.service";
-import {
-  IssuedWarranty,
-  notifyWarrantiesIssued,
-} from "../warranty/warranty.notifications";
 import { recordActivity, notifyUser } from "../activity/activity.service";
 import {
   notifyOrderPlaced,
@@ -223,9 +218,8 @@ function buildOrderSearchCondition(search: string) {
 }
 
 /**
- * Cancelling: fail the payment, retire any warranty coverage, put the stock
- * back, and — when the order had already been delivered — undo the sale and
- * the loyalty points it paid out.
+ * Cancelling: fail the payment, put the stock back, and — when the order had
+ * already been delivered — undo the sale and the loyalty points it paid out.
  */
 async function applyCancellation(
   order: any,
@@ -240,9 +234,7 @@ async function applyCancellation(
   );
 
   // Errors are left to bubble up: the transaction then rolls the whole
-  // cancellation back instead of leaving warranties open on a cancelled order.
-  await voidWarrantiesForOrder(orderId, session);
-
+  // cancellation back instead of leaving a half-refunded order behind.
   const wasDelivered = previousStatus === "delivered";
 
   for (const item of order.items || []) {
@@ -296,21 +288,21 @@ async function applyCancellation(
 
 /**
  * Delivery: settle the payment, then (on the first delivery only) count the
- * sale, credit loyalty points, re-check the tier, and issue warranties.
+ * sale, credit loyalty points and re-check the tier.
  */
 async function applyDelivery(
   order: any,
   orderId: string,
   previousStatus: string,
   session?: ClientSession
-): Promise<IssuedWarranty[]> {
+): Promise<void> {
   await Transaction.updateMany(
     { orderId, status: { $ne: "success" } },
     { $set: { status: "success" } },
     { session }
   );
 
-  if (previousStatus === "delivered") return [];
+  if (previousStatus === "delivered") return;
 
   for (const item of order.items || []) {
     const productId = orderItemProductId(item);
@@ -332,11 +324,6 @@ async function applyDelivery(
   if (updatedUser) {
     await syncMembershipTier(updatedUser, session);
   }
-
-  // Idempotent — one warranty per (user, product, order). A failure here rolls
-  // the delivery back, so retrying it cannot settle the order twice. The
-  // summaries are returned so the confirmation email can go out after commit.
-  return createWarrantiesForOrder(orderId, order.userId.toString(), order.items || [], session);
 }
 
 /**
@@ -779,10 +766,6 @@ export async function updateOrderStatus(
    */
   options: { byRider?: boolean; byCustomer?: boolean } = {}
 ) {
-  // Warranty confirmations are collected inside the transaction but only sent
-  // after it commits, so a rolled-back delivery never announces coverage that
-  // does not exist.
-  let issuedWarranties: IssuedWarranty[] = [];
   // The status before this change, needed by the feed outside the transaction.
   let previousStatus = "";
   // Re-selecting the same stage is a no-op, and a no-op must not be announced.
@@ -936,7 +919,7 @@ export async function updateOrderStatus(
     }
 
     if (data.orderStatus === "delivered") {
-      issuedWarranties = await applyDelivery(updated, id, order.orderStatus, session);
+      await applyDelivery(updated, id, order.orderStatus, session);
     }
 
     return updated;
@@ -951,18 +934,6 @@ export async function updateOrderStatus(
       type: "transaction",
       title: `Payment collected for ${shortOrderNumber(updated._id)}`,
       detail: `Cash on delivery · ${money(updated.totalAmount)}`,
-      ref: updated._id.toString(),
-    });
-  }
-
-  if (issuedWarranties.length) {
-    await notifyWarrantiesIssued(updated, issuedWarranties);
-    await recordActivity({
-      type: "warranty",
-      title: `${issuedWarranties.length} warranty record${
-        issuedWarranties.length === 1 ? "" : "s"
-      } issued`,
-      detail: `Order ${shortOrderNumber(updated._id)} was delivered`,
       ref: updated._id.toString(),
     });
   }
@@ -1065,9 +1036,9 @@ export async function updateCustomerResponse(
 
   if (closesTheSale) {
     // The order first, exactly as the code path does it: settling the sale is
-    // what pays the rider, issues the warranties and converts the points, and
-    // closing an order that is already delivered is a no-op — so a second click
-    // or a retried request cannot book the fee twice.
+    // what pays the rider and converts the points, and closing an order that is
+    // already delivered is a no-op — so a second click or a retried request
+    // cannot book the fee twice.
     await updateOrderStatus(id, { orderStatus: "delivered" }, requester?.id, {
       byCustomer: true,
     });
