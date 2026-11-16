@@ -196,7 +196,7 @@ export const DEFAULT_VENDOR_PLANS: Record<string, VendorPlan> = {
       "50 active products",
       "3 featured products for 7 days",
       "10 active coupons",
-      "Detailed analytics and CSV/PDF reports",
+      "Detailed analytics and CSV reports",
       "Enhanced storefront visibility",
       "Priority support",
     ],

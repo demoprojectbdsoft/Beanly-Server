@@ -56,6 +56,11 @@ const BLANK_PLAN = {
  * which buys a spreadsheet and nothing else, lands on the CSV rung.
  */
 function normalizeExports(value: unknown, planId: string): PlanExports {
+  // Premium buys the spreadsheet and nothing else; only the top rung builds a
+  // PDF. A row that still says csv+pdf on premium is an older edit, and the
+  // report buttons trust this read, so the rung is clamped here rather than on
+  // every screen that asks.
+  if (planId === "premium" && value === "csv+pdf") return "csv";
   if (value === "none" || value === "csv" || value === "csv+pdf") return value;
   if (value === "full") return planId === "advanced" ? "csv+pdf" : "csv";
   if (value === "limited") return planId === "free" ? "none" : "csv";
@@ -280,6 +285,10 @@ export async function updatePlan(
   if (Object.keys(allowed).length === 0) {
     throw new ApiError(400, "Nothing to update");
   }
+
+  // The same clamp the read applies, so a saved plan cannot sit in the database
+  // offering Premium a report this rung never sells.
+  if (planId === "premium" && allowed.exports === "csv+pdf") allowed.exports = "csv";
 
   allowed.updatedBy = adminId ?? null;
 
