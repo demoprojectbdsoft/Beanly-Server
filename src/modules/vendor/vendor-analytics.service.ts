@@ -2,6 +2,7 @@ import { Types } from "mongoose";
 import { VendorOrder, type VendorOrderStatus } from "./vendor-order.model";
 import { getVendorPlanState, vendorCommission } from "./vendor-subscription.service";
 import { getEngagementReport } from "../product-engagement/product-engagement.service";
+import { Product } from "../product/product.model";
 import type { VendorAnalyticsQuery } from "./vendor-analytics.validator";
 
 /**
@@ -73,6 +74,65 @@ function earnedAt(row: any): Date | null {
 
 function unitsOf(row: any): number {
   return (row.items || []).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 0), 0);
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * The units a window earned, keyed by product, so one cost table prices them.
+ *
+ * Only delivered groups count, exactly like the revenue figure: the cost of a
+ * parcel still on the road is not a loss yet.
+ */
+function unitsByProduct(rows: any[], from: number, to: number) {
+  const units = new Map<string, number>();
+  for (const row of rows) {
+    const at = earnedAt(row);
+    if (!at) continue;
+    const time = at.getTime();
+    if (time < from || time > to) continue;
+    for (const item of row.items || []) {
+      const id = String(item.productId?._id ?? item.productId ?? "");
+      if (!id) continue;
+      units.set(id, (units.get(id) || 0) + (Number(item.quantity) || 0));
+    }
+  }
+  return units;
+}
+
+/**
+ * What one unit of each product cost the seller, or null where no cost is on
+ * file. A listing with no invest price is not free to make; it is unknown, and
+ * the page reports those units separately rather than counting them as profit.
+ */
+async function unitCostsOf(ids: string[]) {
+  const valid = [...new Set(ids)]
+    .filter((id) => Types.ObjectId.isValid(id))
+    .map((id) => new Types.ObjectId(id));
+  const rows = valid.length
+    ? await Product.find({ _id: { $in: valid } }).select("investPrice").lean()
+    : [];
+  return new Map<string, number | null>(
+    rows.map((row: any) => [
+      String(row._id),
+      row.investPrice == null ? null : Number(row.investPrice),
+    ])
+  );
+}
+
+/** What the paid plans add: revenue, its cost, and the spread between them. */
+interface ProfitReport {
+  revenue: number;
+  cost: number;
+  profit: number;
+  marginPercent: number | null;
+  previousProfit: number | null;
+  /** Units whose product has no cost price recorded, so they count as zero. */
+  missingCostUnits: number;
+  /** Products that sold below what they cost, worst first. */
+  losses: { title: string; units: number; revenue: number; cost: number; loss: number }[];
 }
 
 /** The day keys of the window, oldest first, so a quiet day is still a point. */
@@ -169,10 +229,23 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
   const current = summarise(rows, from, now);
   const previous = summarise(rows, previousFrom, from);
 
+  // Profit and loss is the paid rungs' read: it prices the delivered units with
+  // the cost the seller recorded on each product. Basic gets no cost figures at
+  // all — not even in the series — so the teaser on its page promises something
+  // the payload does not quietly carry.
+  const paid = level !== "basic";
+  const currentUnits = paid ? unitsByProduct(rows, from, now) : new Map<string, number>();
+  const previousUnits = paid
+    ? unitsByProduct(rows, previousFrom, from)
+    : new Map<string, number>();
+  const unitCosts = paid
+    ? await unitCostsOf([...currentUnits.keys(), ...previousUnits.keys()])
+    : new Map<string, number | null>();
+
   // The chart keeps a point for every day (or month) in the window, so a quiet
   // week reads as flat instead of as missing data.
   const keys = windowKeys(range, monthly);
-  const buckets = new Map(keys.map((key) => [key, { revenue: 0, orders: 0 }]));
+  const buckets = new Map(keys.map((key) => [key, { revenue: 0, orders: 0, cost: 0 }]));
 
   const statusCounts: Record<string, number> = {};
   const products = new Map<string, { title: string; image: string; units: number; revenue: number }>();
@@ -193,6 +266,15 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
       if (bucket) {
         bucket.revenue += Number(row.subtotal) || 0;
         bucket.orders += 1;
+
+        // The same units at the seller's own cost, so the profit line under
+        // the revenue chart is drawn from the same rows as the revenue.
+        for (const item of row.items || []) {
+          const unitCost = unitCosts.get(
+            String(item.productId?._id ?? item.productId ?? "")
+          );
+          if (unitCost) bucket.cost += unitCost * (Number(item.quantity) || 0);
+        }
       }
 
       for (const item of row.items || []) {
@@ -233,6 +315,63 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
     }));
 
   const commissionTaken = Math.round(current.revenue * (commission / 100) * 100) / 100;
+
+  // P&L: the paid plans see what the delivered money cost to make. The cost is
+  // read from each product's current invest price, so editing a cost re-prices
+  // this report — it is the seller's own book, not a frozen invoice.
+  let profit: ProfitReport | null = null;
+  if (paid) {
+    let costTotal = 0;
+    let missingCostUnits = 0;
+    for (const [id, units] of currentUnits) {
+      const unitCost = unitCosts.get(id);
+      if (unitCost == null) {
+        missingCostUnits += units;
+        continue;
+      }
+      costTotal += unitCost * units;
+    }
+
+    let previousCost = 0;
+    for (const [id, units] of previousUnits) {
+      previousCost += (unitCosts.get(id) ?? 0) * units;
+    }
+
+    const cost = round2(costTotal);
+    const gross = round2(current.revenue - cost);
+
+    const losses = [...currentUnits.entries()]
+      .map(([id, units]) => {
+        const product = products.get(id);
+        const unitCost = unitCosts.get(id);
+        if (!product || unitCost == null || unitCost <= 0) return null;
+        const lineCost = round2(unitCost * units);
+        const loss = round2(lineCost - product.revenue);
+        if (loss <= 0) return null;
+        return {
+          title: product.title,
+          units,
+          revenue: round2(product.revenue),
+          cost: lineCost,
+          loss,
+        };
+      })
+      .filter((row): row is ProfitReport["losses"][number] => row !== null)
+      .sort((a, b) => b.loss - a.loss)
+      .slice(0, 5);
+
+    profit = {
+      revenue: current.revenue,
+      cost,
+      profit: gross,
+      marginPercent:
+        current.revenue > 0 ? Math.round((gross / current.revenue) * 1000) / 10 : null,
+      previousProfit:
+        previous.orders > 0 ? round2(previous.revenue - previousCost) : null,
+      missingCostUnits,
+      losses,
+    };
+  }
 
   // The top rung also sees the traffic: which listings were opened, which were
   // pressed, and which were saved for later. It is the same window as the money,
@@ -275,8 +414,15 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
         label: key,
         revenue: Math.round(bucket.revenue * 100) / 100,
         orders: bucket.orders,
+        ...(paid
+          ? {
+              cost: round2(bucket.cost),
+              profit: round2(bucket.revenue - bucket.cost),
+            }
+          : {}),
       };
     }),
+    profit,
     statusCounts,
     topProducts,
     engagement,
