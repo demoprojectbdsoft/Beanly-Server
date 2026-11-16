@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BILLING_CYCLES, VENDOR_APPLICATION_STATUSES, VENDOR_PLAN_IDS } from "./vendor.types";
+import { BILLING_CYCLES, VENDOR_APPLICATION_STATUSES } from "./vendor.types";
 
 /**
  * What a submission may contain.
@@ -89,7 +89,7 @@ export const createApplicationSchema = z.object({
   storeInfo: storeInfoSchema,
   businessAddress: businessAddressSchema,
   verification: verificationSchema,
-  selectedPlan: z.enum(VENDOR_PLAN_IDS).default("free"),
+  selectedPlan: z.string().trim().min(1).max(60).default("free"),
   billingCycle: z.enum(BILLING_CYCLES).default("monthly"),
 });
 

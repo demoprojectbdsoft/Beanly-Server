@@ -1,14 +1,15 @@
 import { z } from "zod";
 
 /**
- * An admin's edit to one plan.
+ * The fields an admin writes on a plan.
  *
- * Every field is optional, so the settings screen can send only what changed.
- * The enum mirrors the plan table: a value outside it is a 400, never a stored
- * typo the dashboards would then have to guess about.
+ * The enums mirror the limit vocabulary the dashboards render: a value outside
+ * them is a 400, never a stored typo the screens would then have to guess
+ * about. The same shape is reused by the create call, where the name is the
+ * only required field — everything else falls back to a sensible zero.
  */
-export const updatePlanSchema = z.object({
-  name: z.string().trim().min(1).max(60).optional(),
+const planFields = z.object({
+  name: z.string().trim().min(2).max(60).optional(),
   monthlyPrice: z.coerce.number().min(0).optional(),
   yearlyPrice: z.coerce.number().min(0).optional(),
   maxProducts: z.coerce.number().int().min(0).optional(),
@@ -27,6 +28,16 @@ export const updatePlanSchema = z.object({
   commissionPercent: z.coerce.number().min(0).max(100).optional(),
   gracePeriodDays: z.coerce.number().int().min(0).max(90).optional(),
   billingCycles: z.array(z.enum(["monthly", "yearly"])).min(1).optional(),
+  sortOrder: z.coerce.number().int().min(0).optional(),
+});
+
+/** An admin's edit to one plan; every field is optional. */
+export const updatePlanSchema = planFields;
+
+/** A new plan. Only the name is needed; the rest starts at zero. */
+export const createPlanSchema = planFields.extend({
+  name: z.string().trim().min(2).max(60),
 });
 
 export type UpdatePlanInput = z.infer<typeof updatePlanSchema>;
+export type CreatePlanInput = z.infer<typeof createPlanSchema>;

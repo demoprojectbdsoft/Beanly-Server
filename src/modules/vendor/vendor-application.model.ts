@@ -1,9 +1,5 @@
 import { Schema, model } from "mongoose";
-import {
-  BILLING_CYCLES,
-  VENDOR_APPLICATION_STATUSES,
-  VENDOR_PLAN_IDS,
-} from "./vendor.types";
+import { BILLING_CYCLES, VENDOR_APPLICATION_STATUSES } from "./vendor.types";
 
 /**
  * One person's request to sell on the platform.
@@ -107,7 +103,7 @@ const vendorApplicationSchema = new Schema(
     verification: { type: verificationSchema, default: () => ({}) },
 
     /** The plan the applicant picked; the subscription is created on approval. */
-    selectedPlan: { type: String, enum: VENDOR_PLAN_IDS, default: "free" },
+    selectedPlan: { type: String, default: "free" },
     billingCycle: { type: String, enum: BILLING_CYCLES, default: "monthly" },
 
     /** Filled by the reviewer. */

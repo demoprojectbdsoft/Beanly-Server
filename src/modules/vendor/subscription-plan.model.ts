@@ -1,17 +1,17 @@
 import { Schema, model } from "mongoose";
-import { VENDOR_PLAN_IDS } from "./vendor.types";
 
 /**
- * An admin-editable copy of one plan.
+ * One plan in the store's price list.
  *
  * The defaults in `vendor.types.ts` seed this collection; from then on a row
- * here wins. That is how "prices, limits, features and billing duration must be
- * editable by Admin" holds without touching code, while a missing row still
- * leaves the store working.
+ * here wins. The store team adds, edits and removes rows from the dashboard,
+ * which is how prices, limits, features and billing duration stay editable
+ * without touching code. `planId` is a slug derived from the name, so a plan
+ * added later needs no code change either.
  */
 const subscriptionPlanSchema = new Schema(
   {
-    planId: { type: String, enum: VENDOR_PLAN_IDS, required: true, unique: true, index: true },
+    planId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
 
     monthlyPrice: { type: Number, required: true, min: 0 },
@@ -39,6 +39,9 @@ const subscriptionPlanSchema = new Schema(
     gracePeriodDays: { type: Number, default: 0, min: 0 },
     /** Billing periods the plan may be bought for. */
     billingCycles: { type: [String], enum: ["monthly", "yearly"], default: ["monthly", "yearly"] },
+
+    /** Where the plan sits in the admin list and on the pricing cards. */
+    sortOrder: { type: Number, default: 0 },
 
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },

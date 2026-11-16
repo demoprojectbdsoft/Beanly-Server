@@ -1,5 +1,4 @@
 import { Schema, model } from "mongoose";
-import { VENDOR_PLAN_IDS } from "./vendor.types";
 
 /**
  * One promotional placement bought with a subscription.
@@ -30,7 +29,7 @@ const featuredPromotionSchema = new Schema(
 
     /** Which subscription paid for it, and on which plan. */
     subscriptionId: { type: Schema.Types.ObjectId, ref: "VendorSubscription", default: null },
-    plan: { type: String, enum: VENDOR_PLAN_IDS, required: true },
+    plan: { type: String, required: true },
     source: { type: String, enum: ["subscription", "admin"], default: "subscription" },
 
     startsAt: { type: Date, required: true },

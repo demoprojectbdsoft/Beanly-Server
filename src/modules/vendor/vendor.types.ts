@@ -67,19 +67,29 @@ export const isLiveVendorProductStatus = (status?: string | null): boolean =>
     status as (typeof VENDOR_LIVE_PRODUCT_STATUSES)[number]
   );
 
-/** Paid plans are the only ones that go through the demo checkout. */
+/**
+ * The plans the store starts with.
+ *
+ * These three are seeded on first read; from then on the store team adds,
+ * edits and removes plans from the dashboard, so a plan id is any string the
+ * plan table holds — not a fixed union. `free` stays reserved because the code
+ * falls back to it when a vendor has no live period.
+ */
 export const VENDOR_PLAN_IDS = ["free", "premium", "advanced"] as const;
-export type VendorPlanId = (typeof VENDOR_PLAN_IDS)[number];
+export type VendorPlanId = string;
 
 export const BILLING_CYCLES = ["monthly", "yearly"] as const;
 export type BillingCycle = (typeof BILLING_CYCLES)[number];
 
-/** Ordered worst-to-best so an upgrade/downgrade is a comparison, not a list. */
-export const PLAN_RANK: Record<VendorPlanId, number> = {
-  free: 0,
-  premium: 1,
-  advanced: 2,
-};
+/**
+ * How good a plan is, for naming an upgrade or a downgrade.
+ *
+ * Admin-made plans have no fixed rung in a ladder, so the comparison is the
+ * monthly price: a dearer plan is an upgrade, a cheaper one a downgrade.
+ */
+export function planRank(plan: Pick<VendorPlan, "monthlyPrice">): number {
+  return Number(plan.monthlyPrice) || 0;
+}
 
 export interface VendorPlanLimits {
   /** Active (published) products the plan allows. */
@@ -110,13 +120,21 @@ export interface VendorPlan extends VendorPlanLimits {
   highlights: string[];
   /** Admin can retire a plan without deleting it. */
   isActive: boolean;
+  /** Platform commission on this plan, in percent. */
+  commissionPercent?: number;
+  /** Days a lapsed subscription keeps its benefits before it stops. */
+  gracePeriodDays?: number;
+  /** Billing periods the plan may be bought for. */
+  billingCycles?: BillingCycle[];
+  /** Where the plan sits in the admin's list and on the pricing cards. */
+  sortOrder?: number;
 }
 
 /**
  * The defaults the store starts with. An admin edit is stored as a
  * `subscriptionplans` row and wins over this table; this is only the seed.
  */
-export const DEFAULT_VENDOR_PLANS: Record<VendorPlanId, VendorPlan> = {
+export const DEFAULT_VENDOR_PLANS: Record<string, VendorPlan> = {
   free: {
     id: "free",
     name: "Free",
@@ -140,6 +158,7 @@ export const DEFAULT_VENDOR_PLANS: Record<VendorPlanId, VendorPlan> = {
       "Standard store visibility",
     ],
     isActive: true,
+    sortOrder: 0,
   },
   premium: {
     id: "premium",
@@ -166,6 +185,7 @@ export const DEFAULT_VENDOR_PLANS: Record<VendorPlanId, VendorPlan> = {
       "Priority support",
     ],
     isActive: true,
+    sortOrder: 1,
   },
   advanced: {
     id: "advanced",
@@ -193,6 +213,7 @@ export const DEFAULT_VENDOR_PLANS: Record<VendorPlanId, VendorPlan> = {
       "Priority support",
     ],
     isActive: true,
+    sortOrder: 2,
   },
 };
 
@@ -207,4 +228,5 @@ export function billingDays(cycle: BillingCycle): number {
 }
 
 /** A free plan never reaches the demo checkout. */
-export const isPaidPlan = (planId: VendorPlanId): boolean => planId !== "free";
+export const isPaidPlan = (plan: Pick<VendorPlan, "monthlyPrice">): boolean =>
+  (Number(plan.monthlyPrice) || 0) > 0;

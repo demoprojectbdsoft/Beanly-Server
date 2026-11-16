@@ -1,5 +1,5 @@
 import { Schema, model } from "mongoose";
-import { BILLING_CYCLES, VENDOR_PLAN_IDS } from "./vendor.types";
+import { BILLING_CYCLES } from "./vendor.types";
 
 /**
  * A vendor's subscription.
@@ -21,8 +21,8 @@ const subscriptionEventSchema = new Schema(
       required: true,
     },
     at: { type: Date, default: Date.now },
-    fromPlan: { type: String, enum: VENDOR_PLAN_IDS, default: null },
-    toPlan: { type: String, enum: VENDOR_PLAN_IDS, default: null },
+    fromPlan: { type: String, default: null },
+    toPlan: { type: String, default: null },
     note: { type: String, default: "" },
     by: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
@@ -34,7 +34,7 @@ const vendorSubscriptionSchema = new Schema(
     vendorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     storeId: { type: Schema.Types.ObjectId, ref: "VendorStore", required: true, index: true },
 
-    plan: { type: String, enum: VENDOR_PLAN_IDS, required: true },
+    plan: { type: String, required: true },
     billingCycle: { type: String, enum: BILLING_CYCLES, default: "monthly" },
 
     status: { type: String, enum: SUBSCRIPTION_STATUSES, default: "active", index: true },
@@ -86,7 +86,7 @@ const subscriptionTransactionSchema = new Schema(
     storeId: { type: Schema.Types.ObjectId, ref: "VendorStore", default: null },
     subscriptionId: { type: Schema.Types.ObjectId, ref: "VendorSubscription", default: null },
 
-    plan: { type: String, enum: VENDOR_PLAN_IDS, required: true },
+    plan: { type: String, required: true },
     billingCycle: { type: String, enum: BILLING_CYCLES, required: true },
     amount: { type: Number, required: true, min: 0 },
 

@@ -1,33 +1,60 @@
 import { ApiError } from "../../utils/apiError";
 import { SubscriptionPlan } from "./subscription-plan.model";
+import { VendorSubscription } from "./vendor-subscription.model";
 import {
   DEFAULT_VENDOR_PLANS,
   VENDOR_PLAN_IDS,
+  type BillingCycle,
   type VendorPlan,
-  type VendorPlanId,
 } from "./vendor.types";
 
 /**
  * The single place a plan is read from.
  *
- * The defaults in `vendor.types.ts` are the seed; a `subscriptionplans` row is
- * the admin's edit and wins. Everything — the pricing cards, the limit checks,
- * the expiry sweep — goes through here, so a changed price can never disagree
- * with a changed limit.
+ * The defaults in `vendor.types.ts` seed the collection once; after that the
+ * rows here are the price list the store team maintains from the dashboard.
+ * Everything — the pricing cards, the limit checks, the expiry sweep — goes
+ * through this file, so a changed price can never disagree with a changed
+ * limit, and a plan added later needs no code change.
  */
+
+/** What a plan looks like when the store team leaves a limit out. */
+const BLANK_PLAN = {
+  name: "Plan",
+  monthlyPrice: 0,
+  yearlyPrice: 0,
+  maxProducts: 0,
+  featuredProducts: 0,
+  featuredDurationDays: 0,
+  activeCoupons: 0,
+  analytics: "basic",
+  salesReports: "basic",
+  exports: "limited",
+  storeCustomization: "basic",
+  promotionalCampaigns: "none",
+  storeVisibility: "standard",
+  support: "standard",
+  highlights: [],
+  isActive: true,
+  commissionPercent: 0,
+  gracePeriodDays: 0,
+  billingCycles: ["monthly", "yearly"] as BillingCycle[],
+  sortOrder: 0,
+} satisfies Omit<VendorPlan, "id">;
 
 /** Turns one stored row into the shape the rest of the app uses. */
 function fromRow(row: any): VendorPlan {
-  const fallback = DEFAULT_VENDOR_PLANS[row.planId as VendorPlanId];
+  const fallback = DEFAULT_VENDOR_PLANS[row.planId] ?? BLANK_PLAN;
   return {
-    ...fallback,
+    id: String(row.planId),
     name: row.name ?? fallback.name,
-    monthlyPrice: row.monthlyPrice ?? fallback.monthlyPrice,
-    yearlyPrice: row.yearlyPrice ?? fallback.yearlyPrice,
-    maxProducts: row.maxProducts ?? fallback.maxProducts,
-    featuredProducts: row.featuredProducts ?? fallback.featuredProducts,
-    featuredDurationDays: row.featuredDurationDays ?? fallback.featuredDurationDays,
-    activeCoupons: row.activeCoupons ?? fallback.activeCoupons,
+    monthlyPrice: Number(row.monthlyPrice ?? fallback.monthlyPrice) || 0,
+    yearlyPrice: Number(row.yearlyPrice ?? fallback.yearlyPrice) || 0,
+    maxProducts: Number(row.maxProducts ?? fallback.maxProducts) || 0,
+    featuredProducts: Number(row.featuredProducts ?? fallback.featuredProducts) || 0,
+    featuredDurationDays:
+      Number(row.featuredDurationDays ?? fallback.featuredDurationDays) || 0,
+    activeCoupons: Number(row.activeCoupons ?? fallback.activeCoupons) || 0,
     analytics: row.analytics ?? fallback.analytics,
     salesReports: row.salesReports ?? fallback.salesReports,
     exports: row.exports ?? fallback.exports,
@@ -37,49 +64,168 @@ function fromRow(row: any): VendorPlan {
     support: row.support ?? fallback.support,
     highlights: row.highlights?.length ? row.highlights : fallback.highlights,
     isActive: row.isActive ?? fallback.isActive,
+    commissionPercent: Number(row.commissionPercent ?? fallback.commissionPercent) || 0,
+    gracePeriodDays: Number(row.gracePeriodDays ?? fallback.gracePeriodDays) || 0,
+    billingCycles: row.billingCycles?.length ? row.billingCycles : fallback.billingCycles,
+    sortOrder: Number(row.sortOrder ?? fallback.sortOrder) || 0,
   };
 }
 
 /**
- * Writes any missing default plan into the collection.
+ * Writes the starting price list into an empty collection.
  *
- * It uses upserts instead of a separate seed script so a fresh database works
- * on the first request, and an admin's edit is never overwritten.
+ * It only seeds when no plan exists at all, so a plan the store team deleted
+ * stays deleted instead of reappearing on the next page load. Two concurrent
+ * first reads race here; the unique `planId` index keeps one set of rows and
+ * the duplicate error is ignored.
  */
 export async function ensurePlansSeeded(): Promise<void> {
-  await Promise.all(
-    VENDOR_PLAN_IDS.map((planId) =>
-      SubscriptionPlan.updateOne(
-        { planId },
-        { $setOnInsert: DEFAULT_VENDOR_PLANS[planId] },
-        { upsert: true }
-      ).catch(() => undefined)
-    )
-  );
+  const existing = await SubscriptionPlan.estimatedDocumentCount();
+  if (existing > 0) return;
+
+  try {
+    await SubscriptionPlan.insertMany(
+      VENDOR_PLAN_IDS.map((planId) => ({ ...DEFAULT_VENDOR_PLANS[planId], planId }))
+    );
+  } catch {
+    // Another request seeded at the same moment.
+  }
 }
 
-/** All three plans in their fixed order, merged with admin edits. */
+/** The whole price list, cheapest rung first. */
 export async function listPlans(): Promise<VendorPlan[]> {
   await ensurePlansSeeded();
   const rows = await SubscriptionPlan.find({}).lean();
-  const byId = new Map(rows.map((row: any) => [row.planId, row]));
 
-  return VENDOR_PLAN_IDS.map((planId) => {
-    const row = byId.get(planId);
-    return row ? fromRow(row) : DEFAULT_VENDOR_PLANS[planId];
-  });
+  // A store that has deleted every row still needs prices to show, so the
+  // defaults answer rather than an empty page.
+  if (rows.length === 0) {
+    return VENDOR_PLAN_IDS.map((planId) => DEFAULT_VENDOR_PLANS[planId]);
+  }
+
+  return rows
+    .map(fromRow)
+    .sort(
+      (a, b) =>
+        (a.sortOrder ?? 0) - (b.sortOrder ?? 0) ||
+        a.monthlyPrice - b.monthlyPrice ||
+        a.name.localeCompare(b.name)
+    );
+}
+
+/** The plans a buyer may choose: everything the store has not retired. */
+export async function listActivePlans(): Promise<VendorPlan[]> {
+  const plans = await listPlans();
+  return plans.filter((plan) => plan.isActive !== false);
 }
 
 /** One plan, or a 400 naming the value that was sent. */
 export async function getPlan(planId: string): Promise<VendorPlan> {
-  if (!VENDOR_PLAN_IDS.includes(planId as VendorPlanId)) {
-    throw new ApiError(400, "Unknown subscription plan");
-  }
+  await ensurePlansSeeded();
+  const row: any = await SubscriptionPlan.findOne({ planId }).lean();
+  if (row) return fromRow(row);
 
-  const plans = await listPlans();
-  const plan = plans.find((row) => row.id === planId);
-  if (!plan) throw new ApiError(400, "Unknown subscription plan");
-  return plan;
+  // `free` is the rung the code falls back to when a vendor has no live
+  // period, so it answers even before the row exists.
+  if (planId === "free") return DEFAULT_VENDOR_PLANS.free;
+
+  throw new ApiError(400, "Unknown subscription plan");
+}
+
+/** A plan id made from the name, so a new plan needs no code change. */
+function slugifyPlanId(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug || "plan";
+}
+
+/** Everything an admin may write on a plan. */
+export interface PlanInput {
+  name?: string;
+  monthlyPrice?: number;
+  yearlyPrice?: number;
+  maxProducts?: number;
+  featuredProducts?: number;
+  featuredDurationDays?: number;
+  activeCoupons?: number;
+  analytics?: string;
+  salesReports?: string;
+  exports?: string;
+  storeCustomization?: string;
+  promotionalCampaigns?: string;
+  storeVisibility?: string;
+  support?: string;
+  highlights?: string[];
+  isActive?: boolean;
+  commissionPercent?: number;
+  gracePeriodDays?: number;
+  billingCycles?: string[];
+  sortOrder?: number;
+}
+
+const WRITABLE_FIELDS = [
+  "name",
+  "monthlyPrice",
+  "yearlyPrice",
+  "maxProducts",
+  "featuredProducts",
+  "featuredDurationDays",
+  "activeCoupons",
+  "analytics",
+  "salesReports",
+  "exports",
+  "storeCustomization",
+  "promotionalCampaigns",
+  "storeVisibility",
+  "support",
+  "highlights",
+  "isActive",
+  "commissionPercent",
+  "gracePeriodDays",
+  "billingCycles",
+  "sortOrder",
+] as const;
+
+/** Copies only the fields that were sent, so a partial edit stays partial. */
+function pickWritable(patch: PlanInput): Record<string, unknown> {
+  const allowed: Record<string, unknown> = {};
+  for (const field of WRITABLE_FIELDS) {
+    if (patch[field] !== undefined) allowed[field] = patch[field];
+  }
+  return allowed;
+}
+
+/**
+ * Adds a plan to the price list.
+ *
+ * The id is derived from the name, so two plans cannot share one and a link to
+ * a plan keeps working after a rename is refused by the caller's edit path.
+ */
+export async function createPlan(input: PlanInput, adminId?: string): Promise<VendorPlan> {
+  const name = (input.name || "").trim();
+  if (name.length < 2) throw new ApiError(400, "Give the plan a name");
+
+  await ensurePlansSeeded();
+
+  const planId = slugifyPlanId(name);
+  const existing = await SubscriptionPlan.findOne({ planId }).lean();
+  if (existing) throw new ApiError(400, "A plan with this name already exists");
+
+  const last: any = await SubscriptionPlan.findOne({}).sort({ sortOrder: -1 }).lean();
+  const row = {
+    ...pickWritable(input),
+    planId,
+    name,
+    sortOrder: input.sortOrder ?? Number(last?.sortOrder ?? -1) + 1,
+    updatedBy: adminId ?? null,
+  };
+
+  await SubscriptionPlan.create(row);
+  return getPlan(planId);
 }
 
 /**
@@ -88,52 +234,49 @@ export async function getPlan(planId: string): Promise<VendorPlan> {
  */
 export async function updatePlan(
   planId: string,
-  patch: Partial<VendorPlan> & {
-    commissionPercent?: number;
-    gracePeriodDays?: number;
-    billingCycles?: string[];
-  },
+  patch: PlanInput,
   adminId?: string
 ): Promise<VendorPlan> {
   await getPlan(planId);
 
-  const allowed: Record<string, unknown> = {};
-  const fields = [
-    "name",
-    "monthlyPrice",
-    "yearlyPrice",
-    "maxProducts",
-    "featuredProducts",
-    "featuredDurationDays",
-    "activeCoupons",
-    "analytics",
-    "salesReports",
-    "exports",
-    "storeCustomization",
-    "promotionalCampaigns",
-    "storeVisibility",
-    "support",
-    "highlights",
-    "isActive",
-    "commissionPercent",
-    "gracePeriodDays",
-    "billingCycles",
-  ] as const;
-
-  for (const field of fields) {
-    if (patch[field] !== undefined) allowed[field] = patch[field];
-  }
-
+  const allowed = pickWritable(patch);
   if (Object.keys(allowed).length === 0) {
     throw new ApiError(400, "Nothing to update");
   }
 
   allowed.updatedBy = adminId ?? null;
 
-  // The enum in the schema is narrower than "string", so the filter is cast the
-  // same way the rest of the codebase casts ids that arrive from a URL.
-  await SubscriptionPlan.updateOne({ planId } as any, { $set: allowed }, { upsert: true });
+  await SubscriptionPlan.updateOne({ planId }, { $set: allowed }, { upsert: true });
   return getPlan(planId);
+}
+
+/**
+ * Removes a plan from the price list.
+ *
+ * The free rung stays because the code falls the back on it, and a plan a
+ * vendor is still subscribed to stays until those periods end — deleting it
+ * would leave a live period pointing at nothing.
+ */
+export async function deletePlan(planId: string): Promise<{ planId: string }> {
+  if (planId === "free") {
+    throw new ApiError(400, "The free plan cannot be deleted. Deactivate it instead.");
+  }
+
+  const live = await VendorSubscription.countDocuments({
+    plan: planId,
+    status: { $in: ["active", "grace"] },
+  });
+  if (live > 0) {
+    throw new ApiError(
+      400,
+      `${live} vendor${live === 1 ? "" : "s"} still on this plan. Deactivate it and delete it once those periods end.`
+    );
+  }
+
+  const result = await SubscriptionPlan.deleteOne({ planId });
+  if (result.deletedCount === 0) throw new ApiError(404, "Plan not found");
+
+  return { planId };
 }
 
 /**
@@ -144,7 +287,7 @@ export async function updatePlan(
  */
 export async function commissionForPlan(planId: string): Promise<number> {
   await ensurePlansSeeded();
-  const row: any = await SubscriptionPlan.findOne({ planId } as any)
+  const row: any = await SubscriptionPlan.findOne({ planId })
     .select("commissionPercent")
     .lean();
   return Number(row?.commissionPercent) || 0;

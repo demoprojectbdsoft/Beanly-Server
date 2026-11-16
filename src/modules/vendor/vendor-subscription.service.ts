@@ -11,10 +11,10 @@ import { getPlan, commissionForPlan } from "./vendor-plan.service";
 import { requireStore } from "./vendor-store.service";
 import type { CheckoutSubscriptionInput } from "./vendor-subscription.validator";
 import {
-  PLAN_RANK,
   VENDOR_LIVE_PRODUCT_STATUSES,
   billingDays,
   planPrice,
+  planRank,
   type BillingCycle,
   type VendorPlan,
   type VendorPlanId,
@@ -438,11 +438,20 @@ export async function expireDueSubscriptions() {
 /** A vendor's own subscription plus the plans it can move to. */
 export async function getSubscriptionOverview(vendorId: string) {
   const state = await getVendorPlanState(vendorId);
-  const [plans, payments, history] = await Promise.all([
-    (await import("./vendor-plan.service")).listPlans(),
+  const planService = await import("./vendor-plan.service");
+  const [offered, payments, history] = await Promise.all([
+    planService.listActivePlans(),
     SubscriptionTransaction.find({ vendorId }).sort({ createdAt: -1 }).limit(50).lean(),
     VendorSubscription.find({ vendorId }).sort({ createdAt: -1 }).limit(50).lean(),
   ]);
+
+  // A plan the store team retired still shows for the vendor standing on it,
+  // so the comparison never hides the price they are currently paying.
+  const plans = offered.some((plan) => plan.id === state.plan.id)
+    ? offered
+    : [...offered, state.plan].sort(
+        (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.monthlyPrice - b.monthlyPrice
+      );
 
   return { ...state, plans, payments, history };
 }
@@ -457,11 +466,12 @@ function normaliseReference(value?: string): string {
 /** Which kind of change a purchase is, read from what the vendor already has. */
 function purchasePurpose(
   state: VendorPlanState,
-  planId: VendorPlanId
+  plan: VendorPlan
 ): "activation" | "renewal" | "upgrade" | "downgrade" {
   if (!state.isLive) return state.subscription ? "renewal" : "activation";
-  if (state.plan.id === planId) return "renewal";
-  return PLAN_RANK[planId] > PLAN_RANK[state.plan.id] ? "upgrade" : "downgrade";
+  if (state.plan.id === plan.id) return "renewal";
+  // Plans are not a fixed ladder any more, so a dearer plan is the upgrade.
+  return planRank(plan) > planRank(state.plan) ? "upgrade" : "downgrade";
 }
 
 /**
@@ -479,9 +489,19 @@ export async function checkoutSubscription(
 ) {
   const store = await requireStore(vendorId);
   const plan = await getPlan(input.planId);
+
+  // A retired plan cannot be bought, and a plan sold monthly only cannot be
+  // taken for a year, whatever a stale tab still shows.
+  if (plan.isActive === false) {
+    throw new ApiError(400, "This plan is no longer offered");
+  }
+  if (plan.billingCycles?.length && !plan.billingCycles.includes(input.billingCycle)) {
+    throw new ApiError(400, `This plan is only sold ${plan.billingCycles.join(" or ")}`);
+  }
+
   const state = await getVendorPlanState(vendorId);
   const price = planPrice(plan, input.billingCycle);
-  const purpose = purchasePurpose(state, plan.id);
+  const purpose = purchasePurpose(state, plan);
 
   if (input.idempotencyKey) {
     const previous = await SubscriptionTransaction.findOne({
