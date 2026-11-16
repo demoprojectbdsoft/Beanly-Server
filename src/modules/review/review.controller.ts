@@ -16,6 +16,13 @@ export const getReviews = catchAsync(async (req, res) => {
   apiResponse(res, 200, result, "Reviews fetched successfully");
 });
 
+/** A seller's own board: the feed, but only for the listings they own. */
+export const getVendorReviews = catchAsync(async (req, res) => {
+  const query = parseQuery(getReviewsQuerySchema, req.query);
+  const result = await reviewService.getVendorReviews(currentUserId(req.user), query);
+  apiResponse(res, 200, result, "Reviews fetched successfully");
+});
+
 export const updateReview = catchAsync(async (req, res) => {
   const review = await reviewService.updateReview(
     req.params.id as string,

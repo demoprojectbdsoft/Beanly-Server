@@ -5,7 +5,6 @@ import { Product } from "../product/product.model";
 import { Order } from "../order/order.model";
 import { CreateReviewInput, UpdateReviewInput, GetReviewsQuery } from "./review.validator";
 import { ApiError } from "../../utils/apiError";
-import { assertOwnerOrAdmin } from "../../utils/authz";
 import { idQuery } from "../../utils/ids";
 import { isAdminRole } from "../../utils/roles";
 import { recordActivity } from "../activity/activity.service";
@@ -75,12 +74,23 @@ function formatReview(r: any, user?: any, product?: any) {
   };
 }
 
-export async function getReviews(query: GetReviewsQuery) {
+export async function getReviews(query: GetReviewsQuery, productScope?: string[]) {
   const { productId, userId, rating, search, sort, page, limit } = query;
 
   // Build base filter — only add fields if provided
   const filter: any = {};
-  if (productId) filter.productId = idQuery(productId);
+  if (productScope) {
+    // A seller's board passes its own listings. Asking for one product as well
+    // narrows the scope rather than escaping it, so a guessed id finds nothing.
+    const ids = productScope
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    filter.productId = productId
+      ? { $in: ids.filter((id) => String(id) === productId) }
+      : { $in: ids };
+  } else if (productId) {
+    filter.productId = idQuery(productId);
+  }
   if (userId) filter.userId = idQuery(userId);
   if (rating) filter.rating = rating;
 
@@ -176,6 +186,20 @@ export async function getReviews(query: GetReviewsQuery) {
 }
 
 /**
+ * A seller's own feedback: every review on a listing they own.
+ *
+ * The ids are resolved here, from the token's vendor account, so the review
+ * reader never has to trust a scope that arrived in the request.
+ */
+export async function getVendorReviews(vendorId: string, query: GetReviewsQuery) {
+  const productIds = await Product.find({ vendorId: idQuery(vendorId) }).distinct("_id");
+  return getReviews(
+    query,
+    productIds.map((id: any) => String(id))
+  );
+}
+
+/**
  * A review has to be earned: the product must have been delivered to the
  * customer, and each customer gets one review per product.
  *
@@ -266,8 +290,18 @@ export async function deleteReview(id: string, requester?: { id?: string; role?:
   const review = await ProductReview.findById(id);
   if (!review) throw new ApiError(404, "Review not found");
 
-  // The reviewer can remove their own review; an admin can moderate any review.
-  assertOwnerOrAdmin(review.userId, requester, "You can only delete your own reviews.");
+  // The reviewer can remove their own review; an admin can moderate any review;
+  // a seller moderates the feedback left on their own listing, and nothing else.
+  const isReviewer = requester?.id && String(review.userId) === String(requester.id);
+  const isAdmin = isAdminRole(requester?.role);
+  const ownsProduct =
+    !isReviewer && !isAdmin && requester?.id
+      ? await Product.exists({ _id: review.productId, vendorId: requester.id })
+      : false;
+
+  if (!isReviewer && !isAdmin && !ownsProduct) {
+    throw new ApiError(403, "You can only delete your own reviews.");
+  }
 
   await ProductReview.findByIdAndDelete(id);
 }

@@ -150,6 +150,32 @@ export const getRiderPayouts = catchAsync(async (req, res) => {
   apiResponse(res, 200, result, "Rider payouts fetched successfully");
 });
 
+// ─── Seller ───────────────────────────────────────────────────────────────────
+
+/**
+ * The seller's delivery board.
+ *
+ * Same three reads as the store's, scoped to the orders the seller has a row
+ * in. The scope is resolved from the token, so no order id in the request can
+ * widen it.
+ */
+export const getVendorDeliveries = catchAsync(async (req, res) => {
+  const query = parseQuery(adminDeliveryQuerySchema, req.query);
+  const result = await deliveryService.getVendorDeliveries(currentUserId(req.user), query);
+  apiResponse(res, 200, result, "Deliveries fetched successfully");
+});
+
+export const getVendorDeliveryOverview = catchAsync(async (req, res) => {
+  const result = await deliveryService.getVendorDeliveryOverview(currentUserId(req.user));
+  apiResponse(res, 200, result, "Delivery overview fetched successfully");
+});
+
+export const getVendorRiderPayouts = catchAsync(async (req, res) => {
+  const query = parseQuery(adminPayoutsQuerySchema, req.query);
+  const result = await deliveryService.getVendorPayouts(currentUserId(req.user), query);
+  apiResponse(res, 200, result, "Rider payouts fetched successfully");
+});
+
 export const getOrderDeliveries = catchAsync(async (req, res) => {
   const result = await deliveryService.getOrderDeliveries(String(req.params.orderId));
   apiResponse(res, 200, result, "Order deliveries fetched successfully");
