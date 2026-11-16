@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { objectIdSchema } from "../../utils/ids";
+import { WARRANTY_TYPE_VALUES } from "../warranty/warranty.types";
 import { VENDOR_PRODUCT_STATUSES } from "./vendor.types";
 
 /**
@@ -9,6 +10,10 @@ import { VENDOR_PRODUCT_STATUSES } from "./vendor.types";
  * counters and `isFeatured` are absent on purpose: the service derives them
  * from the token and the plan, so a vendor cannot publish as someone else or
  * promote their own product for free.
+ *
+ * Badges, the offer countdown and the warranty are about the product itself, so
+ * they use the same fields and limits as the admin form — a listing saved from
+ * either dashboard reads the same everywhere.
  */
 
 const objectId = objectIdSchema("Invalid ID");
@@ -53,6 +58,12 @@ export const vendorProductSchema = z.object({
   brand: z.string().trim().max(80).optional(),
   description: z.string().trim().max(5000).optional(),
   specifications: z.record(z.string(), z.any()).optional(),
+
+  badges: z.array(z.string().trim().max(40)).max(6).optional(),
+  offerEndDate: z.coerce.date().nullable().optional(),
+  warrantyPeriodMonths: z.number().int().nonnegative().max(120).optional(),
+  warrantyType: z.enum(WARRANTY_TYPE_VALUES).optional(),
+  warrantyTerms: z.string().trim().max(1000).optional(),
 
   variantOptions: z.array(variantSchema).max(5).optional(),
   shippingInfo: shippingSchema.optional(),
