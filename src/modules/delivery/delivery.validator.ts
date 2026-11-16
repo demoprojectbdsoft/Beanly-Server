@@ -22,16 +22,15 @@ export const riderStatsQuerySchema = z.object({
 });
 
 /**
- * The store offers a job to one rider. `ship` also moves the order to
- * "shipped" in the same request, so the admin's single click cannot leave an
- * order that nobody can ship.
+ * The store offers a job to one rider. The order is not shipped here: an offer
+ * nobody has accepted is not a parcel on the road, so shipping waits for the
+ * rider's answer.
  */
 export const assignDeliverySchema = z.object({
   orderId: objectIdSchema("A valid order id is required"),
   riderId: objectIdSchema("A valid rider id is required"),
   fee: z.coerce.number().min(0).max(100000).optional(),
   distanceKm: z.coerce.number().min(0).max(10000).optional(),
-  ship: z.boolean().optional(),
   note: z.string().trim().max(300).optional(),
 });
 

@@ -745,13 +745,13 @@ export async function updateOrderStatus(
       );
     }
 
-    // A parcel only leaves the store with somebody carrying it: the rider has
-    // to be offered the job first, and the offer has to still be alive.
+    // A parcel only leaves the store with somebody carrying it. An offer the
+    // rider has not answered is not a carrier: the order waits in processing
+    // until `acceptDelivery` itself moves it to shipped.
     if (data.orderStatus === "shipped") {
       const riderReady = await Delivery.findOne({
         orderId: id,
-        status: { $in: LIVE_DELIVERY_STATUSES },
-        $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+        status: { $in: ACTIVE_DELIVERY_STATUSES },
       })
         .select("_id")
         .session(session ?? null);
@@ -759,7 +759,7 @@ export async function updateOrderStatus(
       if (!riderReady) {
         throw new ApiError(
           400,
-          "Assign a rider before marking this order shipped. Open the order and choose Ship with a rider."
+          "The rider has to accept the delivery before this order can ship. Assign a rider, or wait for the one already offered to answer."
         );
       }
     }
@@ -905,6 +905,29 @@ export async function updateOrderStatus(
   }
 
   return updated;
+}
+
+// ─── Ship When the Rider Takes the Job ───────────────────────────────────────
+
+/**
+ * The rider took the job, so the parcel is on its way.
+ *
+ * Only an accepted delivery can call this, and only the stages before shipment
+ * are moved: an order already shipped, delivered or cancelled is left exactly
+ * as it is, so a retried accept cannot reopen a closed sale. An order still at
+ * "confirmed" steps through processing first, because that is the only road the
+ * flow allows and the customer should see the visit, not a jump.
+ */
+export async function shipOrderForAcceptedDelivery(orderId: string, riderId?: string) {
+  const order = await Order.findById(orderId).select("orderStatus").lean();
+  if (!order) return null;
+  if (["shipped", "delivered", "cancelled"].includes(order.orderStatus)) return null;
+
+  if (order.orderStatus === "confirmed") {
+    await updateOrderStatus(orderId, { orderStatus: "processing" }, riderId);
+  }
+
+  return updateOrderStatus(orderId, { orderStatus: "shipped" }, riderId);
 }
 
 // ─── Customer Order Response ───────────────────────────────────────────────────

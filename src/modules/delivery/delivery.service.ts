@@ -13,7 +13,7 @@ import { SiteSettings } from "../site-settings/site-settings.model";
 import { ApiError } from "../../utils/apiError";
 import { idQuery } from "../../utils/ids";
 import { hasAnyRole, normalizeRole } from "../../utils/roles";
-import { updateOrderStatus } from "../order/order.service";
+import { updateOrderStatus, shipOrderForAcceptedDelivery } from "../order/order.service";
 import { VendorOrder } from "../vendor/vendor-order.model";
 import { syncVendorOrdersForDelivery } from "../vendor/vendor-order.create";
 import { recordActivity, notifyUser } from "../activity/activity.service";
@@ -800,11 +800,12 @@ async function announceAssignment(delivery: any) {
 }
 
 /**
- * Offers an order to a rider, optionally shipping it in the same step.
+ * Offers an order to a rider.
  *
- * When `ship` is set the order only leaves the store if the offer exists, so a
- * failed ship cancels the offer instead of leaving a rider with a parcel that
- * never left.
+ * The offer is not a shipment. The order keeps whatever stage it had, and the
+ * customer hears nothing yet, because a rider who has not answered is not
+ * carrying anything. The parcel ships the moment the rider accepts, which is
+ * where `acceptDelivery` moves the order.
  */
 export async function assignDelivery(input: AssignDeliveryInput, adminId?: string) {
   const order = await Order.findById(input.orderId);
@@ -855,48 +856,7 @@ export async function assignDelivery(input: AssignDeliveryInput, adminId?: strin
     note: input.note,
   });
 
-  if (input.ship) {
-    try {
-      await updateOrderStatus(String(order._id), { orderStatus: "shipped" }, adminId);
-    } catch (err) {
-      // The offer is worthless without a shipped order, so take it back. The
-      // row stays for the history, and the store can try again.
-      await Delivery.updateOne(
-        { _id: delivery._id },
-        {
-          $set: { status: "cancelled", cancelledAt: new Date() },
-          $push: {
-            history: {
-              status: "cancelled",
-              at: new Date(),
-              note: "Shipping failed, offer withdrawn",
-              by: adminId ?? null,
-            },
-          },
-        }
-      );
-      throw err;
-    }
-  }
-
   await announceAssignment(delivery);
-
-  // When the order ships in the same step, the order_shipped line already
-  // tells the customer a rider is on the case (and now links to the tracking
-  // page). Assigning without shipping would otherwise leave the customer in the
-  // dark, so a delivery_update line points them at the tracking page the
-  // moment a rider is chosen — before the parcel has even left the store.
-  if (!input.ship) {
-    await notifyCustomerDelivery({
-      userId: String(order.userId),
-      deliveryId: String(delivery._id),
-      orderId: String(order._id),
-      orderNumber: shortOrderNumber(order._id),
-      title: "A rider has been assigned",
-      detail:
-        "Your order has been assigned to a rider. We'll let you know as soon as it's on its way.",
-    });
-  }
 
   const populated = await Delivery.findById(delivery._id)
     .populate("riderId", "name phone vehicleType vehicleNumber")
@@ -1038,6 +998,11 @@ export async function acceptDelivery(riderId: string, id: string) {
     detail: `${accepted.customerName || "Customer"} · ${accepted.city || "—"}`,
     ref: String(accepted.orderId),
   });
+
+  // Accepting is the moment the parcel leaves. The offer never moved the order,
+  // so this is the one path that ships it — and the customer's timeline only
+  // starts now, not when the store picked a name.
+  await shipOrderForAcceptedDelivery(String(accepted.orderId), riderId);
 
   const populated = await Delivery.findById(accepted._id)
     .populate("riderId", "name phone vehicleType vehicleNumber")
