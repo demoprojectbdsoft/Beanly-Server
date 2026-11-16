@@ -42,11 +42,60 @@ import { sellingPriceOf } from "../product/product.service";
 const SHIPPING_FEE       = 15.0;
 const EXPRESS_DELIVERY_FEE = 25.0;
 const FREE_SHIPPING_FROM = 50.0;
-const POINTS_PER_DOLLAR  = 1;
-/** 100 loyalty points convert into 1 currency unit at checkout. */
-const POINTS_PER_CURRENCY = 100;
-/** Below one full unit there is nothing worth deducting. */
-const MIN_POINTS_TO_REDEEM = 100;
+
+/**
+ * The loyalty rates checkout falls back to when Site Settings has none.
+ *
+ * One point is collected per currency unit paid, and 100 points buy one unit
+ * back. Both directions, and the smallest redemption, are editable in the
+ * dashboard (Settings → Shipping & Delivery), so these are only defaults.
+ */
+const DEFAULT_POINTS_EARNED_PER_DOLLAR = 1;
+const DEFAULT_POINTS_PER_CURRENCY = 100;
+const DEFAULT_MIN_POINTS_TO_REDEEM = 100;
+
+interface PointsConfig {
+  /** Points collected for each currency unit actually paid. */
+  earnedPerDollar: number;
+  /** Points that buy one currency unit of discount. */
+  perCurrency: number;
+  /** The smallest redemption worth deducting. */
+  minimum: number;
+}
+
+/**
+ * Reads the live loyalty rates from Site Settings.
+ *
+ * The transaction prices an order with the same numbers checkout showed the
+ * customer, so a change in the dashboard takes effect on the next order without
+ * a redeploy.
+ */
+async function resolvePointsConfig(): Promise<PointsConfig> {
+  const fallback: PointsConfig = {
+    earnedPerDollar: DEFAULT_POINTS_EARNED_PER_DOLLAR,
+    perCurrency: DEFAULT_POINTS_PER_CURRENCY,
+    minimum: DEFAULT_MIN_POINTS_TO_REDEEM,
+  };
+
+  try {
+    const settings: any = await getSiteSettings();
+    const s = settings?.shipping || {};
+    const earned = Number(s.pointsEarnedPerDollar);
+    const perCurrency = Number(s.pointsPerDollarRedeem);
+    const minimum = Number(s.minPointsToRedeem);
+
+    return {
+      earnedPerDollar:
+        Number.isFinite(earned) && earned >= 0 ? earned : fallback.earnedPerDollar,
+      perCurrency:
+        Number.isFinite(perCurrency) && perCurrency > 0 ? perCurrency : fallback.perCurrency,
+      minimum: Number.isFinite(minimum) && minimum >= 0 ? minimum : fallback.minimum,
+    };
+  } catch {
+    // Backend unreachable — fall back to the defaults above
+    return fallback;
+  }
+}
 
 /**
  * Resolve the shipping option for an order from the live site settings.
@@ -298,16 +347,17 @@ async function redeemPoints(
   userId: string,
   subtotal: number,
   requested: number,
+  config: PointsConfig,
   session?: ClientSession
 ) {
   const pointsToRedeem = Math.floor(requested);
 
-  if (pointsToRedeem < MIN_POINTS_TO_REDEEM) {
-    throw new ApiError(400, `Redeem at least ${MIN_POINTS_TO_REDEEM} points`);
+  if (pointsToRedeem < config.minimum) {
+    throw new ApiError(400, `Redeem at least ${config.minimum} points`);
   }
 
   // Points pay for products only - the delivery fee is always collected.
-  const maxPointsForOrder = Math.floor(subtotal * POINTS_PER_CURRENCY);
+  const maxPointsForOrder = Math.floor(subtotal * config.perCurrency);
   if (pointsToRedeem > maxPointsForOrder) {
     throw new ApiError(400, "Points can only cover the product total, not the delivery fee");
   }
@@ -326,7 +376,9 @@ async function redeemPoints(
 
   return {
     pointsRedeemed: pointsToRedeem,
-    pointsDiscount: pointsToRedeem / POINTS_PER_CURRENCY,
+    // Rounded to the cent so a rate like 150 points per unit cannot leave a
+    // fraction of a cent on the bill.
+    pointsDiscount: Math.round((pointsToRedeem / config.perCurrency) * 100) / 100,
   };
 }
 
@@ -398,6 +450,7 @@ export async function createOrder(data: CreateOrderInput, userId: string) {
   // Pricing only reads, so it stays outside the transaction.
   const { orderItems, subtotal } = await buildOrderItems(data.items);
   const shipping = await resolveShipping(subtotal, data.shippingMethod);
+  const pointsConfig = await resolvePointsConfig();
   const pointsRequested = data.pointsToRedeem ?? 0;
   const couponCode = data.couponCode?.trim();
 
@@ -416,14 +469,14 @@ export async function createOrder(data: CreateOrderInput, userId: string) {
     // inside the transaction as well. The coupon goes first, so points are only
     // ever asked to cover what the code left to pay for.
     const redemption = pointsRequested
-      ? await redeemPoints(userId, subtotal - couponDiscount, pointsRequested, session)
+      ? await redeemPoints(userId, subtotal - couponDiscount, pointsRequested, pointsConfig, session)
       : { pointsRedeemed: 0, pointsDiscount: 0 };
 
     const totalAmount = subtotal - couponDiscount + shipping.fee - redemption.pointsDiscount;
     // Points are earned on what is really paid for the products, never on the
     // part that a code or the customer's own points covered.
     const pointsEarned = Math.floor(
-      (subtotal - couponDiscount - redemption.pointsDiscount) * POINTS_PER_DOLLAR
+      (subtotal - couponDiscount - redemption.pointsDiscount) * pointsConfig.earnedPerDollar
     );
 
     const order = new Order({

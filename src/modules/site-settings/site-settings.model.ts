@@ -65,6 +65,16 @@ const shippingConfigSchema = new Schema(
     standardDeliveryFee: { type: Number, default: 15 },
     expressDeliveryFee: { type: Number, default: 25 },
     estimatedDeliveryDays: { type: String, default: "2-4 business days" },
+
+    // Loyalty rates. The store owner sets both directions here, and checkout
+    // prices an order with the same numbers, so the screen and the charge can
+    // never disagree about what a point is worth.
+    /** Points a customer collects for each currency unit actually paid. */
+    pointsEarnedPerDollar: { type: Number, default: 1, min: 0 },
+    /** Points needed to take one currency unit off the bill. */
+    pointsPerDollarRedeem: { type: Number, default: 100, min: 1 },
+    /** Below this many points there is nothing worth deducting. */
+    minPointsToRedeem: { type: Number, default: 100, min: 0 },
   },
   { _id: false }
 );
