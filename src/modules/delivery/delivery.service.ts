@@ -11,10 +11,8 @@ import { User } from "../user/user.model";
 import { Order } from "../order/order.model";
 import { SiteSettings } from "../site-settings/site-settings.model";
 import { ApiError } from "../../utils/apiError";
-import { idQuery } from "../../utils/ids";
 import { hasAnyRole, normalizeRole } from "../../utils/roles";
 import { updateOrderStatus, shipOrderForAcceptedDelivery } from "../order/order.service";
-import { VendorOrder } from "../vendor/vendor-order.model";
 import { syncVendorOrdersForDelivery } from "../vendor/vendor-order.create";
 import { recordActivity, notifyUser } from "../activity/activity.service";
 import {
@@ -1256,17 +1254,10 @@ export async function regenerateOtpForDelivery(deliveryId: string) {
 
 // ─── Store: the delivery board ────────────────────────────────────────────────
 
-/** Every job, filtered for the store's delivery page.
- *
- * `orderScope` narrows the board to a set of parent orders. The seller's board
- * passes the orders it has a row in, so the same reader serves both desks and
- * neither has a filter the other can escape.
- */
-export async function getAdminDeliveries(query: AdminDeliveryQuery, orderScope?: Types.ObjectId[]) {
+/** Every job, filtered for the store's delivery page. */
+export async function getAdminDeliveries(query: AdminDeliveryQuery) {
   const { status, riderId, search, sort, page, limit } = query;
   const conditions: any[] = [];
-
-  if (orderScope) conditions.push({ orderId: { $in: orderScope } });
 
   if (status === "active") {
     conditions.push({ status: { $in: ACTIVE_DELIVERY_STATUSES } });
@@ -1318,51 +1309,37 @@ export async function getAdminDeliveries(query: AdminDeliveryQuery, orderScope?:
 }
 
 /** The numbers at the top of the delivery board. */
-export async function getAdminDeliveryOverview(orderScope?: Types.ObjectId[]) {
+export async function getAdminDeliveryOverview() {
   const now = new Date();
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const scope = orderScope ? { orderId: { $in: orderScope } } : {};
 
   const [statusRows, deliveredToday, riders, shippedWithoutRider, onTheRoad] = await Promise.all([
-    Delivery.aggregate([{ $match: scope }, { $group: { _id: "$status", count: { $sum: 1 } } }]),
-    Delivery.countDocuments({ ...scope, status: "delivered", deliveredAt: { $gte: dayStart } }),
-    // A seller has no riders of their own: the number that matters there is how
-    // many are carrying their parcels right now, not who is free for new work.
-    orderScope
-      ? Delivery.distinct("riderId", {
-          ...scope,
-          status: { $in: ACTIVE_DELIVERY_STATUSES },
-        })
-      : User.aggregate([
-          { $match: riderAccountsFilter() },
-          { $group: { _id: "$availability", count: { $sum: 1 } } },
-        ]),
-    orderScope
-      ? VendorOrder.countDocuments({
-          orderId: { $in: orderScope },
-          status: { $in: ["ready_for_shipment", "shipped"] },
-          deliveryId: null,
-        })
-      : Order.countDocuments({
-          orderStatus: "shipped",
-          _id: {
-            $nin: (
-              await Delivery.distinct("orderId", {
-                status: { $in: LIVE_DELIVERY_STATUSES },
-              })
-            ).map((id: any) => new Types.ObjectId(String(id))),
-          },
-        }),
-    Delivery.countDocuments({ ...scope, status: "out_for_delivery" }),
+    Delivery.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
+    Delivery.countDocuments({ status: "delivered", deliveredAt: { $gte: dayStart } }),
+    // Who is free for new work, straight from the rider accounts.
+    User.aggregate([
+      { $match: riderAccountsFilter() },
+      { $group: { _id: "$availability", count: { $sum: 1 } } },
+    ]),
+    Order.countDocuments({
+      orderStatus: "shipped",
+      _id: {
+        $nin: (
+          await Delivery.distinct("orderId", {
+            status: { $in: LIVE_DELIVERY_STATUSES },
+          })
+        ).map((id: any) => new Types.ObjectId(String(id))),
+      },
+    }),
+    Delivery.countDocuments({ status: "out_for_delivery" }),
   ]);
 
   const statusCounts: Record<string, number> = {};
   for (const row of statusRows) statusCounts[row._id] = row.count;
 
-  const onlineRiders = orderScope
-    ? (riders as any[]).length
-    : (riders as any[]).find((row: any) => row._id === "online")?.count ??
-      (riders as any[]).reduce((sum: number, row: any) => sum + row.count, 0);
+  const onlineRiders =
+    (riders as any[]).find((row: any) => row._id === "online")?.count ??
+    (riders as any[]).reduce((sum: number, row: any) => sum + row.count, 0);
 
   return {
     statusCounts,
@@ -1375,28 +1352,6 @@ export async function getAdminDeliveryOverview(orderScope?: Types.ObjectId[]) {
     // Every one of these is a parcel on the road with a code waiting at the door.
     onTheRoad,
   };
-}
-
-/**
- * The orders a seller has a row in.
- *
- * A delivery hangs off the parent order, not off a product, so this is the only
- * honest boundary between two sellers' parcels: neither of them appears in the
- * other's rows, and a cart they both sold in appears in both.
- */
-async function ordersForVendor(vendorId: string) {
-  const ids = await VendorOrder.find({ vendorId: idQuery(vendorId) }).distinct("orderId");
-  return ids.map((id: any) => new Types.ObjectId(String(id)));
-}
-
-/** The seller's board: the jobs carrying their own orders, nothing else. */
-export async function getVendorDeliveries(vendorId: string, query: AdminDeliveryQuery) {
-  return getAdminDeliveries(query, await ordersForVendor(vendorId));
-}
-
-/** The counters above the seller's board. */
-export async function getVendorDeliveryOverview(vendorId: string) {
-  return getAdminDeliveryOverview(await ordersForVendor(vendorId));
 }
 
 /**
@@ -1430,59 +1385,11 @@ function payoutWindow(range: string): { from: Date | null; format: string } {
  * draw one chart. The record table is the only part that is paged.
  */
 export async function getAdminPayouts(query: AdminPayoutsQuery) {
-  return payoutReport(query, null);
+  return payoutReport(query);
 }
 
-/**
- * What the riders carrying a seller's own orders were paid.
- *
- * The delivery and the payment belong to the parent order, so the seller's row
- * is joined in and every pipeline keeps only the orders they are part of. The
- * fee is the store's own charge for the job and is shown in full here; on a
- * shared cart the same fee therefore appears on each seller's board, because
- * that is what the parcel cost, not what each of them owes.
- */
-export async function getVendorPayouts(vendorId: string, query: AdminPayoutsQuery) {
-  return payoutReport(query, {
-    stages: sellerStages(new Types.ObjectId(vendorId)),
-    sales: "$sellerRow.subtotal",
-  });
-}
-
-/** The pipeline that turns a delivery into this seller's own line of it. */
-function sellerStages(vendorId: Types.ObjectId) {
-  return [
-    {
-      $lookup: {
-        from: "vendororders",
-        let: { oid: "$orderId" },
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $and: [{ $eq: ["$orderId", "$$oid"] }, { $eq: ["$vendorId", vendorId] }],
-              },
-            },
-          },
-          { $project: { _id: 0, subtotal: 1 } },
-        ],
-        as: "sellerRow",
-      },
-    },
-    // Unwinding drops every delivery the seller has no row in.
-    { $unwind: "$sellerRow" },
-  ];
-}
-
-/** A seller's scope, or null for the store reading its whole book. */
-interface PayoutScope {
-  stages: any[];
-  /** The money expression the "sales" columns add up. */
-  sales: string;
-}
-
-/** The one payout record both desks read; only the scope differs. */
-async function payoutReport(query: AdminPayoutsQuery, scope: PayoutScope | null) {
+/** The folded report behind the payout board. */
+async function payoutReport(query: AdminPayoutsQuery) {
   const { from, format } = payoutWindow(query.range);
 
   const matched: any = { status: "delivered" };
@@ -1498,20 +1405,18 @@ async function payoutReport(query: AdminPayoutsQuery, scope: PayoutScope | null)
     await Promise.all([
       Delivery.aggregate([
         { $match: withDates },
-        ...(scope?.stages ?? []),
         {
           $group: {
             _id: { $dateToString: { format, date: "$deliveredAt" } },
             jobs: { $sum: 1 },
             paid: { $sum: "$fee" },
-            sales: { $sum: scope ? scope.sales : "$orderTotal" },
+            sales: { $sum: "$orderTotal" },
           },
         },
         { $sort: { _id: 1 } },
       ]),
       Delivery.aggregate([
         { $match: matched },
-        ...(scope?.stages ?? []),
         {
           $group: {
             _id: null,
@@ -1520,7 +1425,7 @@ async function payoutReport(query: AdminPayoutsQuery, scope: PayoutScope | null)
             // The sales these fees came out of. A fee on its own says little;
             // beside the money it was paid from it says how much of a delivered
             // sale the store actually kept.
-            sales: { $sum: scope ? scope.sales : "$orderTotal" },
+            sales: { $sum: "$orderTotal" },
           },
         },
       ]),
@@ -1528,12 +1433,10 @@ async function payoutReport(query: AdminPayoutsQuery, scope: PayoutScope | null)
         {
           $match: { ...matched, deliveredAt: { $gte: monthStart } },
         },
-        ...(scope?.stages ?? []),
         { $group: { _id: null, jobs: { $sum: 1 }, paid: { $sum: "$fee" } } },
       ]),
       Delivery.aggregate([
         { $match: withDates },
-        ...(scope?.stages ?? []),
         {
           $group: {
             _id: "$riderId",
@@ -1555,12 +1458,10 @@ async function payoutReport(query: AdminPayoutsQuery, scope: PayoutScope | null)
               : {}),
           },
         },
-        ...(scope?.stages ?? []),
         { $group: { _id: null, jobs: { $sum: 1 }, amount: { $sum: "$fee" } } },
       ]),
       Delivery.aggregate([
         { $match: matched },
-        ...(scope?.stages ?? []),
         {
           $sort:
             query.sort === "oldest"
@@ -1577,22 +1478,14 @@ async function payoutReport(query: AdminPayoutsQuery, scope: PayoutScope | null)
             riderId: 1,
             city: 1,
             items: 1,
-            // On a seller's board the "sale" is their own subtotal, not the
-            // whole cart the parcel happened to carry.
-            orderTotal: scope ? scope.sales : "$orderTotal",
+            orderTotal: 1,
             fee: 1,
             deliveredAt: 1,
             feePaidVia: 1,
           },
         },
       ]),
-      scope
-        ? Delivery.aggregate([
-            { $match: matched },
-            ...scope.stages,
-            { $count: "total" },
-          ]).then((rows: any[]) => rows[0]?.total ?? 0)
-        : Delivery.countDocuments(matched),
+      Delivery.countDocuments(matched),
     ]);
 
   const paid = Math.round((totalRows[0]?.paid ?? 0) * 100) / 100;

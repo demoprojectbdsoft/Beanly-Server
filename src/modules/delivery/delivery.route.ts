@@ -51,28 +51,6 @@ router.get(
   requireRole("admin"),
   deliveryController.getRiderPayouts
 );
-
-// ─── Seller ───────────────────────────────────────────────────────────────────
-
-/** The same three boards, scoped to the orders a seller has a row in. */
-router.get(
-  "/vendor",
-  requireAuth,
-  requireRole("vendor"),
-  deliveryController.getVendorDeliveries
-);
-router.get(
-  "/vendor/overview",
-  requireAuth,
-  requireRole("vendor"),
-  deliveryController.getVendorDeliveryOverview
-);
-router.get(
-  "/vendor/payouts",
-  requireAuth,
-  requireRole("vendor"),
-  deliveryController.getVendorRiderPayouts
-);
 router.get(
   "/admin/order/:orderId",
   requireAuth,
