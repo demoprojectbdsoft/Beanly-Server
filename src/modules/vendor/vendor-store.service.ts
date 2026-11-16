@@ -41,6 +41,14 @@ export function toStoreDto(store: any) {
       x: store.socialLinks?.x || "",
       linkedin: store.socialLinks?.linkedin || "",
     },
+    warehouse: {
+      label: store.warehouse?.label || "",
+      address: store.warehouse?.address || "",
+      city: store.warehouse?.city || "",
+      area: store.warehouse?.area || "",
+      postalCode: store.warehouse?.postalCode || "",
+      phone: store.warehouse?.phone || "",
+    },
     status: store.status,
     isVisible: store.isVisible !== false,
     isFeatured: Boolean(store.isFeatured),
@@ -99,6 +107,7 @@ const EDITABLE_FIELDS = [
   "category",
   "website",
   "address",
+  "warehouse",
   "socialLinks",
 ] as const;
 
@@ -147,7 +156,8 @@ export async function updateMyStore(userId: string, patch: UpdateStoreInput) {
  * platform's private record; a public page gets what a shopper can act on —
  * the signboard, the contact buttons the seller chose to publish, and the
  * numbers the platform keeps honest. `socialLinks` and `website` stay, because
- * a seller fills them to be reached.
+ * a seller fills them to be reached. The warehouse address never leaves: it is
+ * where a rider collects, not where a shopper visits.
  */
 export function toPublicStoreDto(store: any) {
   const dto = toStoreDto(store);

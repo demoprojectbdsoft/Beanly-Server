@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { warehouseInputSchema } from "../../utils/warehouse";
 import { USER_ROLES } from "./user.model";
 
 /**
@@ -31,6 +32,11 @@ export const updateUserSchema = z.object({
   phone: z.string().optional(),
   bio: z.string().optional(),
   department: z.string().optional(),
+  /**
+   * Where the store team hands parcels over, for an order whose seller has no
+   * warehouse of their own. Admin-only: it is an address riders are sent to.
+   */
+  warehouse: warehouseInputSchema.optional(),
   /** Rider-only details, written from the rider's own profile page. */
   vehicleType: z.string().optional(),
   vehicleNumber: z.string().optional(),
@@ -51,6 +57,7 @@ export const ADMIN_ONLY_USER_FIELDS = [
   "member",
   "points",
   "department",
+  "warehouse",
 ] as const;
 
 /**

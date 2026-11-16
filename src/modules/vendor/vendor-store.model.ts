@@ -1,4 +1,5 @@
 import { Schema, model } from "mongoose";
+import { warehouseSchema } from "../../utils/warehouse";
 import { VENDOR_STORE_STATUSES } from "./vendor.types";
 
 /**
@@ -56,6 +57,11 @@ const vendorStoreSchema = new Schema(
     email: { type: String, default: "" },
     phone: { type: String, default: "" },
     address: { type: storeAddressSchema, default: () => ({}) },
+    /**
+     * Where the stock actually waits for the rider, when that is not the shop
+     * itself. The rider's pickup panel reads this before the storefront address.
+     */
+    warehouse: { type: warehouseSchema, default: () => ({}) },
     socialLinks: { type: socialLinksSchema, default: () => ({}) },
 
     /** Which business category the storefront groups the shop under. */

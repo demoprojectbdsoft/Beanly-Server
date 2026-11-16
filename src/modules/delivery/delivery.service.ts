@@ -10,6 +10,9 @@ import { RiderLocation } from "./delivery.location.model";
 import { User } from "../user/user.model";
 import { Order } from "../order/order.model";
 import { SiteSettings } from "../site-settings/site-settings.model";
+import { VendorOrder } from "../vendor/vendor-order.model";
+import { VendorStore } from "../vendor/vendor-store.model";
+import { hasWarehouse, warehouseLines } from "../../utils/warehouse";
 import { ApiError } from "../../utils/apiError";
 import { hasAnyRole, normalizeRole } from "../../utils/roles";
 import { updateOrderStatus, shipOrderForAcceptedDelivery } from "../order/order.service";
@@ -486,13 +489,15 @@ export async function getRiderDeliveries(riderId: string, query: GetRiderDeliver
 export async function getRiderDelivery(riderId: string, id: string) {
   const delivery = await requireRiderDelivery(riderId, id);
 
-  const [order, settings] = await Promise.all([
+  const [order, settings, shops, team] = await Promise.all([
     Order.findById(delivery.orderId)
       .select(
         "items subtotal shippingFee totalAmount shippingMethod shippingAddress paymentMethod orderStatus estimatedDelivery pointsDiscount pointsRedeemed couponCode couponDiscount createdAt"
       )
       .lean(),
     SiteSettings.findOne().select("siteName address supportPhone supportEmail currency").lean(),
+    shopPickupPoints(delivery.orderId),
+    teamWarehouse(),
   ]);
 
   const dto = toDto(delivery);
@@ -539,12 +544,64 @@ export async function getRiderDelivery(riderId: string, id: string) {
     },
     pickup: {
       name: settings?.siteName || "Sparq store",
-      address: settings?.address || "",
-      phone: settings?.supportPhone || "",
+      address: shops.length === 1 ? shops[0].address : warehouseLines(team?.warehouse).join(", ") || settings?.address || "",
+      phone: (shops.length === 1 ? shops[0].phone : team?.warehouse?.phone) || settings?.supportPhone || "",
       email: settings?.supportEmail || "",
       currency: settings?.currency || "USD",
+      /** Every shop's collection point; a multi-seller parcel has more than one. */
+      warehouses: shops,
     },
   };
+}
+
+/**
+ * The collection point of every shop behind one order.
+ *
+ * The rider asks one question — where do I pick this up — and a marketplace
+ * order can be made of lines from several sellers. Each shop answers with its
+ * warehouse when it has one and with its own address when it does not, because
+ * a seller who never filled in a second address still keeps stock somewhere.
+ * A point with nothing filled in is dropped: an empty card is worse than none.
+ */
+async function shopPickupPoints(orderId: Types.ObjectId | string) {
+  const groups = await VendorOrder.find({ orderId }).select("vendorId storeId").lean();
+  if (groups.length === 0) return [];
+
+  const storeIds = groups.map((row) => row.storeId).filter(Boolean);
+  if (storeIds.length === 0) return [];
+
+  const stores = await VendorStore.find({ _id: { $in: storeIds } })
+    .select("name phone address warehouse")
+    .lean();
+
+  return stores
+    .map((store: any) => {
+      const stock = hasWarehouse(store.warehouse) ? store.warehouse : null;
+      return {
+        name: store.name || "Sparq seller",
+        label: stock?.label || "",
+        address: stock ? stock.address || "" : store.address?.address || "",
+        city: stock ? stock.city || "" : store.address?.city || "",
+        area: stock ? stock.area || "" : store.address?.area || "",
+        postalCode: stock ? stock.postalCode || "" : store.address?.postalCode || "",
+        phone: (stock ? stock.phone : store.phone) || "",
+      };
+    })
+    .filter((point) => point.address || point.city || point.area);
+}
+
+/**
+ * The store team's own warehouse.
+ *
+ * Read as the last answer before the site address: an admin who runs the
+ * hand-over desk fills this in on their profile, and a rider sent to a seller
+ * who never filled one in still gets somewhere to drive to.
+ */
+async function teamWarehouse() {
+  return User.findOne({ role: "admin", "warehouse.address": { $nin: ["", null] } })
+    .select("warehouse")
+    .sort({ updatedAt: -1 })
+    .lean();
 }
 
 /**

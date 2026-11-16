@@ -3,6 +3,7 @@ import { Types } from "mongoose";
 import { ApiError } from "../../utils/apiError";
 import { applySection } from "../../utils/profilePatch";
 import { withTransaction } from "../../utils/transactions";
+import { hasWarehouse } from "../../utils/warehouse";
 import { User } from "../user/user.model";
 import { VendorApplication } from "./vendor-application.model";
 import { VendorStore } from "./vendor-store.model";
@@ -120,6 +121,7 @@ export function toApplicationDto(application: any) {
     personalInfo: application.personalInfo,
     storeInfo: application.storeInfo,
     businessAddress: application.businessAddress,
+    warehouseAddress: application.warehouseAddress || {},
     verification: application.verification,
     selectedPlan: application.selectedPlan,
     billingCycle: application.billingCycle,
@@ -186,6 +188,7 @@ export async function submitApplication(userId: string, input: CreateApplication
     personalInfo: input.personalInfo,
     storeInfo: { ...input.storeInfo, name, slug },
     businessAddress: input.businessAddress,
+    warehouseAddress: input.warehouseAddress || {},
     verification: input.verification || {},
     selectedPlan: input.selectedPlan,
     billingCycle: input.billingCycle,
@@ -323,6 +326,19 @@ export async function updateMyApplication(userId: string, input: UpdateMyApplica
       };
     }
     if (input.isVisible !== undefined) patch.isVisible = input.isVisible;
+    if (input.warehouseAddress) {
+      // Same reason as the address above: every line is written, so clearing a
+      // warehouse box on the form actually empties it rather than leaving the
+      // old street name for the next rider to drive to.
+      patch.warehouse = {
+        label: input.warehouseAddress.label || "",
+        address: input.warehouseAddress.address || "",
+        city: input.warehouseAddress.city || "",
+        area: input.warehouseAddress.area || "",
+        postalCode: input.warehouseAddress.postalCode || "",
+        phone: input.warehouseAddress.phone || "",
+      };
+    }
     if (Object.keys(patch).length > 0) await updateMyStore(userId, patch);
   }
 
@@ -578,6 +594,7 @@ export async function reviewApplication(
             website: fresh.storeInfo.website || "",
             socialLinks: fresh.storeInfo.socialLinks || {},
             address: fresh.businessAddress || {},
+            warehouse: fresh.warehouseAddress || {},
             status: "active",
             isVisible: true,
           },
@@ -585,6 +602,12 @@ export async function reviewApplication(
         { session: session ?? undefined }
       );
       store = created[0];
+    } else if (hasWarehouse(fresh.warehouseAddress)) {
+      // A shop that was already open learns the collection point the applicant
+      // typed, so approving a file for an existing store still tells the rider
+      // where the stock waits.
+      store.warehouse = fresh.warehouseAddress;
+      await store.save({ session: session ?? undefined });
     }
 
     // The conversion: the same user row gains vendor authority. Nothing else

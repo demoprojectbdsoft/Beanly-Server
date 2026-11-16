@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { warehouseInputSchema } from "../../utils/warehouse";
 import { BILLING_CYCLES, VENDOR_APPLICATION_STATUSES } from "./vendor.types";
 
 /**
@@ -88,6 +89,11 @@ export const createApplicationSchema = z.object({
   personalInfo: personalInfoSchema,
   storeInfo: storeInfoSchema,
   businessAddress: businessAddressSchema,
+  /**
+   * Optional on purpose: a seller whose stock leaves from the shop counter has
+   * no second address to give, and the rider then reads the business address.
+   */
+  warehouseAddress: warehouseInputSchema.optional(),
   verification: verificationSchema,
   selectedPlan: z.string().trim().min(1).max(60).default("free"),
   billingCycle: z.enum(BILLING_CYCLES).default("monthly"),
@@ -152,6 +158,7 @@ export const APPLICATION_SECTIONS = [
   "personalInfo",
   "storeInfo",
   "businessAddress",
+  "warehouseAddress",
   "verification",
 ] as const;
 
@@ -160,6 +167,7 @@ export const updateMyApplicationSchema = z
     personalInfo: editPersonalInfoSchema.optional(),
     storeInfo: editStoreInfoSchema.optional(),
     businessAddress: editBusinessAddressSchema.optional(),
+    warehouseAddress: warehouseInputSchema.optional(),
     verification: editVerificationSchema.optional(),
     isVisible: z.boolean().optional(),
   })

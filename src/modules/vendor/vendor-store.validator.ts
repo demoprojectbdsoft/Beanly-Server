@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { warehouseInputSchema } from "../../utils/warehouse";
 import { VENDOR_STORE_STATUSES } from "./vendor.types";
 
 /**
@@ -38,6 +39,7 @@ export const updateStoreSchema = z
     category: z.string().trim().max(80).optional(),
     website: z.string().trim().max(300).optional(),
     address: addressSchema.optional(),
+    warehouse: warehouseInputSchema.optional(),
     socialLinks: socialLinksSchema.optional(),
     isVisible: z.boolean().optional(),
   })

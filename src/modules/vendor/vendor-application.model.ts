@@ -1,4 +1,5 @@
 import { Schema, model } from "mongoose";
+import { warehouseSchema } from "../../utils/warehouse";
 import { BILLING_CYCLES, VENDOR_APPLICATION_STATUSES } from "./vendor.types";
 
 /**
@@ -100,6 +101,12 @@ const vendorApplicationSchema = new Schema(
     personalInfo: { type: personalInfoSchema, required: true },
     storeInfo: { type: storeInfoSchema, required: true },
     businessAddress: { type: businessAddressSchema, required: true },
+    /**
+     * Where the stock leaves from, asked alongside the business address so the
+     * rider knows where to collect. Mirrored onto the store on approval and on
+     * every edit; an empty record means "collect from the shop itself".
+     */
+    warehouseAddress: { type: warehouseSchema, default: () => ({}) },
     verification: { type: verificationSchema, default: () => ({}) },
 
     /** The plan the applicant picked; the subscription is created on approval. */

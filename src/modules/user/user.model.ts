@@ -1,4 +1,5 @@
 import { Schema, model } from "mongoose";
+import { warehouseSchema } from "../../utils/warehouse";
 
 /**
  * Roles the platform recognises. `demoadmin` is admin authority with a
@@ -73,6 +74,14 @@ const userSchema = new Schema(
     phone: { type: String },
     bio: { type: String },
     department: { type: String },
+    /**
+     * Where the store team hands parcels over.
+     *
+     * Filled in from the admin profile. It is the fallback pickup point for an
+     * order whose seller has no warehouse of their own, so a rider is never sent
+     * to a shop counter for stock that is not kept there.
+     */
+    warehouse: { type: warehouseSchema, default: () => ({}) },
     /** Rider-only details, filled in from the rider profile page. */
     vehicleType: { type: String },
     vehicleNumber: { type: String },
