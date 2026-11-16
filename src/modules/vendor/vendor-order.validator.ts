@@ -16,7 +16,9 @@ export const vendorOrderQuerySchema = z.object({
 });
 
 export const vendorOrderStatusSchema = z.object({
-  status: z.enum(["accepted", "processing", "ready_for_shipment", "rejected"]),
+  // The seller answers once. Everything after that — the rider, the shipping
+  // stage — belongs to the store, so there is no preparing step to send here.
+  status: z.enum(["accepted", "rejected"]),
   reason: z.string().trim().max(500).optional(),
 });
 

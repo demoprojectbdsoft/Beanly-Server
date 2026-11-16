@@ -21,7 +21,14 @@ import type { VendorAnalyticsQuery } from "./vendor-analytics.validator";
 
 /** The stages that count as earned, and the ones still moving. */
 const EARNED_STATUSES: VendorOrderStatus[] = ["delivered"];
-const IN_FLIGHT_STATUSES: VendorOrderStatus[] = ["ready_for_shipment", "shipped"];
+// Accepted is on the way too: the seller said yes and the parcel is waiting for
+// a rider, so it is neither income nor lost.
+const IN_FLIGHT_STATUSES: VendorOrderStatus[] = [
+  "accepted",
+  "processing",
+  "ready_for_shipment",
+  "shipped",
+];
 const STOPPED_STATUSES: VendorOrderStatus[] = ["rejected", "cancelled"];
 
 /** The longest window each analytics level may ask for. */

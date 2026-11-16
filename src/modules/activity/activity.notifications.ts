@@ -302,13 +302,19 @@ export async function notifyCustomerDelivery(params: {
   }
 }
 
-/** Tells the store inbox about a delivery problem, such as a decline. */
+/**
+ * Tells the store inbox about a delivery problem, such as a decline — or about
+ * an order a seller accepted, which is the store's cue to put a rider on it.
+ */
 export async function notifyAdminDeliveryEmail(params: {
   heading: string;
   intro?: string;
   orderNumber?: string;
   rows?: { label: string; value?: string | number | null }[];
   note?: string;
+  /** Where the email sends the store, when the board it should open differs. */
+  actionLabel?: string;
+  actionPath?: string;
 }) {
   try {
     const { supportInbox, brand } = await getMailIdentity();
@@ -321,8 +327,8 @@ export async function notifyAdminDeliveryEmail(params: {
       orderNumber: params.orderNumber,
       rows: params.rows,
       note: params.note,
-      actionLabel: "Open deliveries",
-      actionPath: "/dashboard/admin/deliveries",
+      actionLabel: params.actionLabel || "Open deliveries",
+      actionPath: params.actionPath || "/dashboard/admin/deliveries",
       brand,
     });
   } catch (err) {

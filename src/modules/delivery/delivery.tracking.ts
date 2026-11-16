@@ -4,6 +4,9 @@ import { RiderLocation, TRAIL_LIMIT } from "./delivery.location.model";
 import { Order } from "../order/order.model";
 import { ApiError } from "../../utils/apiError";
 import { assertOwnerOrAdmin } from "../../utils/authz";
+import { isAdminRole } from "../../utils/roles";
+import { refIdString } from "../../utils/ids";
+import { VendorOrder } from "../vendor/vendor-order.model";
 import { getCustomerOtp } from "./delivery.otp";
 import { etaFrom, latestLocation, shortOrderNumber, toDto } from "./delivery.service";
 import { LocationInput } from "./delivery.validator";
@@ -94,7 +97,22 @@ export async function getTracking(orderId: string, requester: Requester) {
     .lean();
   if (!order) throw new ApiError(404, "Order not found");
 
-  assertOwnerOrAdmin(order.userId, requester, "You are not allowed to track this order");
+  /*
+   * The buyer watches their own parcel, and a seller watches the parcel they
+   * accepted — saying yes is the whole of their job, so from then on they only
+   * follow it. The door code is never theirs: that is the buyer's proof of
+   * handover, so it stays behind the owner check below.
+   */
+  const isOwner =
+    isAdminRole(requester?.role) ||
+    (Boolean(requester?.id) && refIdString(order.userId) === requester!.id);
+
+  if (!isOwner) {
+    const sellsIt = requester?.id
+      ? await VendorOrder.exists({ orderId: order._id, vendorId: requester.id })
+      : null;
+    if (!sellsIt) throw new ApiError(403, "You are not allowed to track this order");
+  }
 
   // The newest row wins: a reassigned order keeps the earlier attempts for the
   // history but only the current one is on the road.
@@ -150,10 +168,10 @@ export async function getTracking(orderId: string, requester: Requester) {
 
   const progress = trailProgress(trail, delivery.distanceKm ?? null);
 
-  // The code is only useful while the parcel is on its way. Once the job is
-  // closed there is nothing left to read at the door.
+  // The code is only useful while the parcel is on its way, and only to the
+  // buyer: once the job is closed there is nothing left to read at the door.
   const isLive = !["delivered", "cancelled", "declined"].includes(delivery.status as string);
-  const otp = isLive ? await getCustomerOtp(String(delivery._id)) : null;
+  const otp = isLive && isOwner ? await getCustomerOtp(String(delivery._id)) : null;
 
   return {
     order: {
@@ -172,7 +190,7 @@ export async function getTracking(orderId: string, requester: Requester) {
       ? etaFrom(delivery.distanceKm ?? null, location?.speed ?? null, progress)
       : null,
     otp: otp ? { ...otp, progress } : null,
-    isOwner: true,
+    isOwner,
     serverTime: new Date().toISOString(),
   };
 }

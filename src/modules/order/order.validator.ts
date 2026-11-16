@@ -74,6 +74,11 @@ export const customerResponseSchema = z.object({
 export const getOrdersQuerySchema = z.object({
   userId: z.string().optional(),
   status: z.string().optional(),
+  /**
+   * The seller's answer, for the store's board: `accepted` is the queue the
+   * store has to put a rider on, `pending` is a seller still deciding.
+   */
+  vendor: z.enum(["all", "pending", "accepted", "rejected"]).optional(),
   search: z.string().optional(),
   sort: z.enum(["newest", "oldest", "total_asc", "total_desc"]).optional(),
   page: z.coerce.number().int().min(1).default(1),

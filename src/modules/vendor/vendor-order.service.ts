@@ -4,6 +4,8 @@ import { Product } from "../product/product.model";
 import { Order } from "../order/order.model";
 import { Delivery } from "../delivery/delivery.model";
 import { recordActivity } from "../activity/activity.service";
+import { notifyAdminDeliveryEmail } from "../activity/activity.notifications";
+import { updateOrderStatus } from "../order/order.service";
 import { VendorOrder, VENDOR_ORDER_STATUSES, type VendorOrderStatus } from "./vendor-order.model";
 import type { VendorOrderQuery, VendorOrderStatusInput } from "./vendor-order.validator";
 
@@ -23,9 +25,10 @@ const ACTIVE_STATUSES: VendorOrderStatus[] = ["accepted", "processing", "ready_f
 
 /** Which moves a seller may make from the current status. */
 const VENDOR_TRANSITIONS: Record<string, VendorOrderStatus[]> = {
+  // One answer, and then the store takes the parcel over: saying yes is the
+  // seller's whole job on an order, so there is no preparing stage for them to
+  // drive afterwards. A rider is put on it from the store's board.
   pending: ["accepted", "rejected"],
-  accepted: ["processing"],
-  processing: ["ready_for_shipment"],
 };
 
 function assertObjectId(id: string) {
@@ -252,9 +255,9 @@ export async function updateMyVendorOrderStatus(
   const previous = row.status;
   row.status = input.status;
   if (input.status === "rejected") row.rejectionReason = reason;
-  // "Ready" is the seller asking for a rider: the store team owns the
-  // assignment, but it needs to know the parcel is waiting on the counter.
-  if (input.status === "ready_for_shipment" && !row.pickupRequestedAt) {
+  // Accepting is the seller asking for a rider: the parcel waits on the counter
+  // until the store puts one on it, and that clock starts now.
+  if (input.status === "accepted" && !row.pickupRequestedAt) {
     row.pickupRequestedAt = new Date();
   }
   row.history.push({
@@ -270,19 +273,46 @@ export async function updateMyVendorOrderStatus(
   }
 
   await recordActivity({
-    type: input.status === "ready_for_shipment" ? "delivery" : "vendor",
+    type: input.status === "accepted" ? "delivery" : "vendor",
     title:
-      input.status === "ready_for_shipment"
-        ? `${row.orderNumber || "Order"} is ready for pickup`
-        : `${row.orderNumber || "Order"} ${input.status.replace(/_/g, " ")} by the seller`,
+      input.status === "accepted"
+        ? `${row.orderNumber || "Order"} accepted by the seller — assign a rider`
+        : `${row.orderNumber || "Order"} rejected by the seller`,
     detail:
       input.status === "rejected"
         ? reason
         : `${row.customerName || "Customer"} · ${row.city || "—"} · ${row.items.length} item${
             row.items.length === 1 ? "" : "s"
-          }${input.status === "ready_for_shipment" ? " · assign a rider" : ""}`,
+          } · the store assigns the rider`,
     ref: String(row.orderId),
   });
+
+  /*
+   * An accepted order is the store's to move from here. It gets one line in the
+   * shared feed (above) and one email, so the team is asked for a rider even
+   * when nobody has the board open, and the parent leaves "confirmed" so it
+   * shows up in the lane that still needs somebody carrying it.
+   */
+  if (input.status === "accepted") {
+    await notifyAdminDeliveryEmail({
+      heading: "A seller accepted an order",
+      intro: `${row.orderNumber || "An order"} is waiting for a rider. Assign one from the orders board.`,
+      orderNumber: row.orderNumber || "",
+      rows: [
+        { label: "Customer", value: row.customerName || "Customer" },
+        { label: "City", value: row.city || "—" },
+        { label: "Items", value: row.items.length },
+        { label: "Your subtotal", value: row.subtotal },
+      ],
+      note: "The seller has nothing left to do: the parcel ships when the rider accepts.",
+      actionLabel: "Open accepted orders",
+      actionPath: "/dashboard/admin/orders?vendor=accepted",
+    });
+
+    if (parent.orderStatus === "confirmed") {
+      await updateOrderStatus(String(row.orderId), { orderStatus: "processing" }, vendorId);
+    }
+  }
 
   // The store goes through the same read the screens use, so the response and
   // the next page render agree.

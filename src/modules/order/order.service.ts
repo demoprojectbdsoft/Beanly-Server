@@ -29,6 +29,7 @@ import {
 } from "../delivery/delivery.model";
 import { isLapsedOffer } from "../delivery/delivery.flow";
 import { createVendorOrdersForOrder, syncVendorOrdersForParentStatus } from "../vendor/vendor-order.create";
+import { VendorOrder, type VendorOrderStatus } from "../vendor/vendor-order.model";
 import {
   evaluateCoupon,
   loadCouponLines,
@@ -578,12 +579,63 @@ export async function createOrder(data: CreateOrderInput, userId: string) {
 
 // ─── Get Orders ───────────────────────────────────────────────────────────────
 
+/**
+ * The seller statuses each board filter stands for.
+ *
+ * `accepted` covers everything a seller still owes the shop after saying yes:
+ * the older groups sit in the preparing stages, a newly accepted one does not.
+ */
+const VENDOR_FILTER_STATUSES: Record<string, VendorOrderStatus[]> = {
+  pending: ["pending"],
+  accepted: ["accepted", "processing", "ready_for_shipment"],
+  rejected: ["rejected"],
+};
+
+/**
+ * What the sellers have done with their part of one order.
+ *
+ * A cart can be split between several sellers, so the answer is a standing for
+ * the whole order: anybody still deciding holds it, anybody who accepted is
+ * work the store owes, and an order every seller refused is rejected.
+ */
+function vendorStanding(rows: { status: string }[]) {
+  if (rows.length === 0) return null;
+
+  const count = (list: string[]) => rows.filter((row) => list.includes(row.status)).length;
+  const pending = count(["pending"]);
+  const accepted = count(VENDOR_FILTER_STATUSES.accepted);
+  const rejected = count(["rejected"]);
+  const settled = count(["shipped", "delivered", "cancelled"]);
+
+  const status =
+    pending > 0
+      ? "pending"
+      : accepted > 0
+        ? "accepted"
+        : rejected === rows.length
+          ? "rejected"
+          : settled === rows.length
+            ? "settled"
+            : "mixed";
+
+  return { status, groups: rows.length, pending, accepted, rejected };
+}
+
 export async function getOrders(query: GetOrdersQuery) {
-  const { userId, status, search, sort, page, limit } = query;
+  const { userId, status, vendor, search, sort, page, limit } = query;
   const conditions: any[] = [];
 
   if (userId) conditions.push({ userId });
   if (status && status !== "all") conditions.push({ orderStatus: status.toLowerCase() });
+
+  // The seller's answer lives on the seller rows, not on the order, so the
+  // filter resolves the orders first and then narrows to them.
+  if (vendor && vendor !== "all") {
+    const vendorOrderIds = await VendorOrder.find({
+      status: { $in: VENDOR_FILTER_STATUSES[vendor] },
+    }).distinct("orderId");
+    conditions.push({ _id: { $in: vendorOrderIds } });
+  }
 
   if (search?.trim()) conditions.push(buildOrderSearchCondition(search));
 
@@ -626,11 +678,27 @@ export async function getOrders(query: GetOrdersQuery) {
     claims.map((row) => [String(row.orderId), row] as [string, any])
   );
 
+  // What each seller said about their slice, so the board can flag an order the
+  // store still has to put a rider on without opening it.
+  const vendorRows = ids.length
+    ? await VendorOrder.find({ orderId: { $in: ids } })
+        .select("orderId status")
+        .lean()
+    : [];
+  const vendorByOrder = new Map<string, { status: string }[]>();
+  for (const row of vendorRows) {
+    const key = String((row as any).orderId);
+    const list = vendorByOrder.get(key) || [];
+    list.push({ status: String((row as any).status) });
+    vendorByOrder.set(key, list);
+  }
+
   return {
     orders: orders.map((order) => {
       const claim = claimByOrder.get(String(order._id));
       return {
         ...order.toObject(),
+        vendor: vendorStanding(vendorByOrder.get(String(order._id)) || []),
         delivery: claim
           ? {
               _id: String(claim._id),
