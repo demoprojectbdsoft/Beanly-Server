@@ -49,6 +49,12 @@ export const vendorProductSchema = z.object({
 
   price: z.number().positive("Price must be positive"),
   originalPrice: z.number().positive().nullable().optional(),
+  /**
+   * The seller's own cost per unit. It is never shown to a buyer; the seller
+   * enters it so profit, margin and the loss report on their own analytics can
+   * be worked out from the prices they actually charge.
+   */
+  investPrice: z.number().nonnegative().nullable().optional(),
 
   image: z.string().url("Image must be a valid URL"),
   additionalImages: z.array(z.string().url()).max(8).optional(),

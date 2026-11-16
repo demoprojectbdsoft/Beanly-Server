@@ -53,10 +53,11 @@ async function getRatingsMap(productIds: string[]) {
  * Who is reading a row.
  *
  * "public" is every shop page and every anonymous caller: it never carries the
- * cost the store paid. "admin" is the store team's own desks, which need the
- * cost and the margin and are allowed to see rows a shopper cannot reach.
+ * cost the store paid. "admin" is the store team's own desks, and "vendor" is
+ * a seller reading one of their own listings — both need the cost and the
+ * margin, and both are allowed to see rows a shopper cannot reach.
  */
-export type ProductView = "public" | "admin";
+export type ProductView = "public" | "admin" | "vendor";
 
 export interface FormatProductOptions {
   ratingsMap?: Map<string, any>;
@@ -179,7 +180,8 @@ export function formatProduct(product: any, options: FormatProductOptions = {}) 
       : undefined;
 
   // The cost price and everything derived from it stay off the public shape, so
-  // the spread below drops it before the fields are added back for the admin.
+  // the spread below drops it before the fields are added back for the owner's
+  // own desks.
   const { investPrice: storedInvestPrice, ...productFields } = obj;
 
   const response: Record<string, any> = {
@@ -202,7 +204,7 @@ export function formatProduct(product: any, options: FormatProductOptions = {}) 
     reviewCount: stat ? stat.count : (obj.reviewCount ?? 0),
   };
 
-  if (view !== "admin") return response;
+  if (view === "public") return response;
 
   // Profit margin % — only meaningful when a cost and a price exist
   const investPrice =

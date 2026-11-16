@@ -128,7 +128,7 @@ export async function listMyProducts(userId: string, query: VendorProductQuery) 
   }, {});
 
   return {
-    products: rows.map((row) => formatProduct(row)),
+    products: rows.map((row) => formatProduct(row, { view: "vendor" })),
     total,
     typeCounts,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
@@ -150,7 +150,9 @@ export async function getMyProduct(userId: string, productId: string) {
     .populate("subCategoryIds", "name slug");
 
   if (!product) throw new ApiError(404, "Product not found");
-  return formatProduct(product);
+  // The seller's own listing, so their cost and margin come back with it — the
+  // same fields the store's edit form reads, and the values the P&L needs.
+  return formatProduct(product, { view: "vendor" });
 }
 
 /**
@@ -192,6 +194,7 @@ export async function createMyProduct(userId: string, input: CreateVendorProduct
     subCategoryIds: input.subCategoryIds ?? [],
     price: input.price,
     originalPrice: input.originalPrice ?? undefined,
+    investPrice: input.investPrice ?? undefined,
     image: input.image,
     additionalImages: input.additionalImages ?? [],
     stockQuantity: input.stockQuantity ?? null,
@@ -264,6 +267,7 @@ export async function updateMyProduct(
     "subCategoryIds",
     "price",
     "originalPrice",
+    "investPrice",
     "image",
     "additionalImages",
     "stockQuantity",

@@ -18,7 +18,7 @@ const productSchema = new Schema(
 
     price: { type: Number, required: true },
     originalPrice: { type: Number },
-    investPrice: { type: Number },   // admin-only: purchase / cost price for profit tracking
+    investPrice: { type: Number },   // the owner's purchase / cost price, for profit tracking
     // discountPercentage intentionally NOT stored — computed on read
 
     image: { type: String, required: true },           // main image
