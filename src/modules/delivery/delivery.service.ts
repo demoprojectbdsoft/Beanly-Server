@@ -73,6 +73,24 @@ function riderOf(delivery: any) {
   };
 }
 
+/**
+ * The store account that handed the job out, if the row recorded one.
+ *
+ * The field is only readable when the query joined it, so an unjoined row — the
+ * big store and seller boards, which never show a name — answers null instead of
+ * leaking a bare id into the DTO.
+ */
+function assignerOf(delivery: any) {
+  const assigner = delivery?.assignedBy;
+  if (!assigner || typeof assigner !== "object" || !("name" in assigner)) return null;
+  return {
+    _id: String(assigner._id),
+    name: assigner.name || "",
+    email: assigner.email || "",
+    role: assigner.role || "admin",
+  };
+}
+
 /** A delivery as the app reads it: ids as strings, dates as ISO strings. */
 export function toDto(delivery: any) {
   return {
@@ -103,6 +121,8 @@ export function toDto(delivery: any) {
     createdAt: new Date(delivery.createdAt).toISOString(),
     updatedAt: new Date(delivery.updatedAt).toISOString(),
     rider: riderOf(delivery),
+    // Who offered the job, so the rider can see the store account behind it.
+    assignedBy: assignerOf(delivery),
     history: (delivery.history || []).map((event: any) => ({
       status: event.status as DeliveryStatus,
       at: event.at ? new Date(event.at).toISOString() : null,
@@ -160,10 +180,9 @@ function deliveryStartedAt(delivery: {
 /** Loads a delivery or throws the message the caller can act on. */
 async function requireDelivery(id: string) {
   if (!Types.ObjectId.isValid(id)) throw new ApiError(404, "Delivery not found");
-  const delivery = await Delivery.findById(id).populate(
-    "riderId",
-    "name phone vehicleType vehicleNumber availability"
-  );
+  const delivery = await Delivery.findById(id)
+    .populate("riderId", "name phone vehicleType vehicleNumber availability")
+    .populate("assignedBy", "name email role");
   if (!delivery) throw new ApiError(404, "Delivery not found");
   return delivery;
 }
@@ -278,7 +297,10 @@ export async function getRiderStats(riderId: string, query: RiderStatsQuery) {
 
   // One read of the rider's jobs, oldest first: totals, the chart series and the
   // delivery-time average all come from the same snapshot.
-  const deliveries = await Delivery.find({ riderId: rider }).sort({ createdAt: 1 }).lean();
+  const deliveries = await Delivery.find({ riderId: rider })
+    .populate("assignedBy", "name email role")
+    .sort({ createdAt: 1 })
+    .lean();
 
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -435,6 +457,9 @@ export async function getRiderDeliveries(riderId: string, query: GetRiderDeliver
   const filter = { $and: conditions };
   const [deliveries, total, pending] = await Promise.all([
     Delivery.find(filter)
+      // The rider sees whose name is behind the request on every row, so the
+      // assigner is joined with the list rather than read one job at a time.
+      .populate("assignedBy", "name email role")
       .sort(sortMap[sort] ?? sortMap.newest)
       .skip((page - 1) * limit)
       .limit(limit)
@@ -873,10 +898,9 @@ export async function assignDelivery(input: AssignDeliveryInput, adminId?: strin
     });
   }
 
-  const populated = await Delivery.findById(delivery._id).populate(
-    "riderId",
-    "name phone vehicleType vehicleNumber"
-  );
+  const populated = await Delivery.findById(delivery._id)
+    .populate("riderId", "name phone vehicleType vehicleNumber")
+    .populate("assignedBy", "name email role");
   return toDto(populated);
 }
 
@@ -956,10 +980,9 @@ export async function reassignDelivery(
   });
 
   await announceAssignment(replacement);
-  const populated = await Delivery.findById(replacement._id).populate(
-    "riderId",
-    "name phone vehicleType vehicleNumber"
-  );
+  const populated = await Delivery.findById(replacement._id)
+    .populate("riderId", "name phone vehicleType vehicleNumber")
+    .populate("assignedBy", "name email role");
   return toDto(populated);
 }
 
@@ -1016,10 +1039,9 @@ export async function acceptDelivery(riderId: string, id: string) {
     ref: String(accepted.orderId),
   });
 
-  const populated = await Delivery.findById(accepted._id).populate(
-    "riderId",
-    "name phone vehicleType vehicleNumber"
-  );
+  const populated = await Delivery.findById(accepted._id)
+    .populate("riderId", "name phone vehicleType vehicleNumber")
+    .populate("assignedBy", "name email role");
   return toDto(populated);
 }
 
@@ -1074,10 +1096,9 @@ export async function declineDelivery(
     note: input.reason,
   });
 
-  const populated = await Delivery.findById(declined._id).populate(
-    "riderId",
-    "name phone vehicleType vehicleNumber"
-  );
+  const populated = await Delivery.findById(declined._id)
+    .populate("riderId", "name phone vehicleType vehicleNumber")
+    .populate("assignedBy", "name email role");
   return toDto(populated);
 }
 
@@ -1686,6 +1707,7 @@ export async function getOrderDeliveries(orderId: string) {
   if (!Types.ObjectId.isValid(orderId)) throw new ApiError(404, "Order not found");
   const deliveries = await Delivery.find({ orderId: new Types.ObjectId(orderId) })
     .populate("riderId", "name phone image vehicleType vehicleNumber")
+    .populate("assignedBy", "name email role")
     .sort({ createdAt: -1 })
     .lean();
   return { deliveries: deliveries.map(toDto) };
