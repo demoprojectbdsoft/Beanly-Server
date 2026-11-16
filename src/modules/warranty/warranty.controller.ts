@@ -2,6 +2,8 @@ import { catchAsync } from "../../utils/catchAsync";
 import { apiResponse } from "../../utils/apiResponse";
 import { ApiError } from "../../utils/apiError";
 import { parseQuery } from "../../utils/validate";
+import { hasAnyRole, isAdminRole } from "../../utils/roles";
+import { Product } from "../product/product.model";
 import * as warrantyService from "./warranty.service";
 import {
   submitWarrantyClaimSchema,
@@ -78,6 +80,35 @@ export const getAllWarranties = catchAsync(async (req, res) => {
 });
 
 /**
+ * The seller whose listings the caller may touch, or undefined for the store
+ * team. An admin keeps every listing; a vendor is pinned to their own id, which
+ * the service then checks against the warranty's product.
+ */
+function vendorScope(user: { id?: string; role?: string; roles?: string[] } | undefined) {
+  if (!user?.id || isAdminRole(user.role)) return undefined;
+  return hasAnyRole(user.roles, ["vendor"], user.role) ? user.id : undefined;
+}
+
+/**
+ * Vendor: list the warranties issued on their own products.
+ *
+ * The product ids are resolved here from the caller's id rather than read from
+ * the query, so the scope cannot be widened by editing the URL.
+ */
+export const getVendorWarranties = catchAsync(async (req, res, next) => {
+  if (!req.user?.id) {
+    return next(new ApiError(401, "Authentication required"));
+  }
+  const productIds = await Product.find({ vendorId: req.user.id }).distinct("_id");
+  const query = parseQuery(getWarrantiesQuerySchema, req.query);
+  const result = await warrantyService.getWarranties({
+    ...query,
+    productIds: productIds.map(String),
+  });
+  apiResponse(res, 200, result, "Warranties fetched successfully");
+});
+
+/**
  * Admin: process a claim — mark under review, request info, resolve, or reject.
  */
 export const adminUpdateClaim = catchAsync(async (req, res, next) => {
@@ -87,7 +118,8 @@ export const adminUpdateClaim = catchAsync(async (req, res, next) => {
   }
   const warranty = await warrantyService.adminUpdateClaim(
     req.params.id as string,
-    parsed.data
+    parsed.data,
+    vendorScope(req.user)
   );
   apiResponse(res, 200, warranty, "Claim updated");
 });
@@ -114,7 +146,8 @@ export const emailCustomer = catchAsync(async (req, res, next) => {
 
   const result = await warrantyService.emailWarrantyCustomer(
     req.params.id as string,
-    parsed.data
+    parsed.data,
+    vendorScope(req.user)
   );
   apiResponse(res, 200, result, `Email sent to ${result.to}`);
 });
@@ -132,7 +165,8 @@ export const extendWarranty = catchAsync(async (req, res, next) => {
   const warranty = await warrantyService.extendWarranty(
     req.params.id as string,
     parsed.data,
-    { email: req.user?.email }
+    { email: req.user?.email },
+    vendorScope(req.user)
   );
   apiResponse(res, 200, warranty, "Warranty extended");
 });

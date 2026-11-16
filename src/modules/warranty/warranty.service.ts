@@ -214,12 +214,26 @@ export async function getWarrantyForOrderItem(
 
 /**
  * Fetch warranties for a customer, optionally filtered by status.
+ *
+ * `productIds` narrows the list to one seller's own listings. It is set by the
+ * controller from the caller's id, never by the query string, so a vendor can
+ * only ever read the warranties of products they own.
  */
-export async function getWarranties(query: GetWarrantiesQuery) {
-  const { userId, productId, orderId, status, warrantyType, page, limit } = query;
+export async function getWarranties(
+  query: GetWarrantiesQuery & { productIds?: string[] }
+) {
+  const { userId, productId, orderId, status, warrantyType, productIds, page, limit } = query;
   const filter: any = {};
   if (userId) filter.userId = userId;
-  if (productId) filter.productId = productId;
+  // The seller scope wins over the single-product filter: asking for a product
+  // that is not theirs simply finds nothing instead of widening the list.
+  if (productIds) {
+    filter.productId = productId
+      ? { $in: productIds.filter((id) => id === productId) }
+      : { $in: productIds };
+  } else if (productId) {
+    filter.productId = productId;
+  }
   if (orderId) filter.orderId = orderId;
   // The type lives beside the status, so both filters simply narrow the same
   // list and can be used together.
@@ -307,17 +321,36 @@ export async function submitClaim(
 }
 
 /**
+ * A vendor may only act on warranties of products they listed.
+ *
+ * The store team keeps its bypass — no id means an admin — but a seller's id
+ * turns the warranty's product into a permission check, so one shop can never
+ * resolve, reject, email or extend another shop's claim.
+ */
+async function assertWarrantyOwner(warranty: any, vendorId?: string) {
+  if (!vendorId) return;
+  const product = await Product.findById(warranty.productId).select("vendorId").lean();
+  if (!product || String((product as any).vendorId) !== String(vendorId)) {
+    throw new ApiError(403, "This warranty belongs to another seller's product");
+  }
+}
+
+/**
  * Admin actions on a claim.
  *   mark_under_review -> status = under_review
  *   resolve           -> status = resolved, resolution recorded
  *   reject            -> status = expired (claim rejected, warranty consumed)
+ *
+ * A vendor calling this is held to their own listings by `assertWarrantyOwner`.
  */
 export async function adminUpdateClaim(
   warrantyId: string,
-  data: AdminUpdateClaimInput
+  data: AdminUpdateClaimInput,
+  vendorId?: string
 ) {
   const warranty = await Warranty.findById(warrantyId);
   if (!warranty) throw new ApiError(404, "Warranty not found");
+  await assertWarrantyOwner(warranty, vendorId);
 
   // Every action may only move an open claim. Without this check the API would
   // happily "resolve" a warranty that was never claimed, or reopen a closed one.
@@ -375,10 +408,12 @@ export async function adminUpdateClaim(
  */
 export async function emailWarrantyCustomer(
   warrantyId: string,
-  data: EmailWarrantyInput
+  data: EmailWarrantyInput,
+  vendorId?: string
 ): Promise<{ to: string }> {
   const warranty = await Warranty.findById(warrantyId);
   if (!warranty) throw new ApiError(404, "Warranty not found");
+  await assertWarrantyOwner(warranty, vendorId);
 
   const result = await sendWarrantyMessage(warranty, data.subject, data.message);
   if (!result.to) {
@@ -408,10 +443,12 @@ export async function emailWarrantyCustomer(
 export async function extendWarranty(
   warrantyId: string,
   data: ExtendWarrantyInput,
-  actor?: { name?: string; email?: string }
+  actor?: { name?: string; email?: string },
+  vendorId?: string
 ) {
   const warranty = await Warranty.findById(warrantyId);
   if (!warranty) throw new ApiError(404, "Warranty not found");
+  await assertWarrantyOwner(warranty, vendorId);
 
   // The route validates the body, but the service is the last line of defence:
   // a zero or negative count would quietly write a useless extension.
