@@ -74,9 +74,8 @@ const vendorOrderSchema = new Schema(
     riderId: { type: Schema.Types.ObjectId, ref: "User", default: null },
 
     /**
-     * When the seller marked the group ready for shipment. It is the seller's
-     * way of asking for a rider; the store team still makes the assignment,
-     * because only the store sees every shop's load at once.
+     * When the seller accepted their lines. Accepting is what asks the store
+     * team for a rider: the seller has nothing left to drive after it.
      */
     pickupRequestedAt: { type: Date, default: null },
 

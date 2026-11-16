@@ -1,6 +1,8 @@
 import { Types } from "mongoose";
 import { VendorOrder, type VendorOrderStatus } from "./vendor-order.model";
+import { Order } from "../order/order.model";
 import { getVendorPlanState, vendorCommission } from "./vendor-subscription.service";
+import { planCoversDelivery } from "./vendor.types";
 import { getEngagementReport } from "../product-engagement/product-engagement.service";
 import { Product } from "../product/product.model";
 import type { VendorAnalyticsQuery } from "./vendor-analytics.validator";
@@ -85,6 +87,88 @@ function unitsOf(row: any): number {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/** What the courier was paid on this window's parcels, and who paid it. */
+export interface DeliveryFeeSplit {
+  /** True on a plan that bundles delivery, so nothing comes off the income. */
+  covered: boolean;
+  /** Every fee on the parcels the window earned. */
+  billed: number;
+  /** The part that came off the seller's income. */
+  deducted: number;
+  /** The part the store team carried — a paid plan, or the excess over income. */
+  absorbed: number;
+}
+
+/**
+ * Splits each delivered parcel's delivery fee between the shop and the store.
+ *
+ * One order is one parcel and one fee, so a shop pays the share of it its own
+ * lines are worth: two shops in one checkout do not each pay the full charge.
+ * On the free plan the fee comes out of what the group earned and stops at that
+ * figure, because an order that cost more to deliver than it made is our loss to
+ * carry — the seller's income never goes below zero off the back of it.
+ */
+async function deliveryFeeSplit(
+  rows: any[],
+  from: number,
+  to: number,
+  covered: boolean
+): Promise<DeliveryFeeSplit> {
+  const empty: DeliveryFeeSplit = { covered, billed: 0, deducted: 0, absorbed: 0 };
+
+  const earned = rows.filter((row) => {
+    const at = earnedAt(row);
+    return at !== null && at.getTime() >= from && at.getTime() <= to;
+  });
+  if (earned.length === 0) return empty;
+
+  const orderIds = [
+    ...new Set(earned.map((row) => String(row.orderId || ""))),
+  ]
+    .filter((id) => Types.ObjectId.isValid(id))
+    .map((id) => new Types.ObjectId(id));
+  if (orderIds.length === 0) return empty;
+
+  const [orders, groups] = await Promise.all([
+    Order.find({ _id: { $in: orderIds } })
+      .select("shippingFee")
+      .lean(),
+    VendorOrder.find({ orderId: { $in: orderIds } })
+      .select("orderId subtotal")
+      .lean(),
+  ]);
+
+  const feeOf = new Map(
+    orders.map((order: any) => [String(order._id), Number(order.shippingFee) || 0])
+  );
+  const worthOf = new Map<string, number>();
+  for (const group of groups as any[]) {
+    const key = String(group.orderId);
+    worthOf.set(key, (worthOf.get(key) || 0) + (Number(group.subtotal) || 0));
+  }
+
+  let billed = 0;
+  let deducted = 0;
+  let absorbed = 0;
+
+  for (const row of earned) {
+    const key = String(row.orderId || "");
+    const fee = feeOf.get(key) || 0;
+    const worth = worthOf.get(key) || 0;
+    const subtotal = Number(row.subtotal) || 0;
+    if (fee <= 0 || worth <= 0) continue;
+
+    const share = round2((fee * subtotal) / worth);
+    const paid = covered ? 0 : Math.min(share, subtotal);
+
+    billed = round2(billed + share);
+    deducted = round2(deducted + paid);
+    absorbed = round2(absorbed + (share - paid));
+  }
+
+  return { covered, billed, deducted, absorbed };
 }
 
 /**
@@ -230,7 +314,7 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
       { status: { $in: IN_FLIGHT_STATUSES } },
     ],
   })
-    .select("status subtotal items createdAt updatedAt history orderNumber city")
+    .select("status subtotal items createdAt updatedAt history orderNumber city orderId")
     .lean();
 
   const current = summarise(rows, from, now);
@@ -323,6 +407,17 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
 
   const commissionTaken = Math.round(current.revenue * (commission / 100) * 100) / 100;
 
+  // The courier is paid before anybody is: on the free plan it comes off this
+  // window's income, capped at what the window earned, and a paid plan leaves
+  // the whole fee with us.
+  const delivery = await deliveryFeeSplit(
+    rows,
+    from,
+    now,
+    planCoversDelivery(plan)
+  );
+  const netPayout = Math.round((current.revenue - commissionTaken - delivery.deducted) * 100) / 100;
+
   // P&L: the paid plans see what the delivered money cost to make. The cost is
   // read from each product's current invest price, so editing a cost re-prices
   // this report — it is the seller's own book, not a frozen invoice.
@@ -402,7 +497,11 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
       inFlight: Math.round(inFlight * 100) / 100,
       commission: Math.round(commission * 10) / 10,
       commissionTaken,
-      netPayout: Math.round((current.revenue - commissionTaken) * 100) / 100,
+      netPayout,
+      /** The delivery fee this window's parcels carried, split by who paid it. */
+      deliveryFee: delivery.deducted,
+      deliveryFeeBilled: delivery.billed,
+      deliveryFeeAbsorbed: delivery.absorbed,
       fulfilmentRate: closed > 0 ? Math.round((deliveredCount / closed) * 100) : 0,
       stopped: stoppedCount,
       placed: placed.length,
@@ -430,6 +529,7 @@ export async function getVendorAnalytics(vendorId: string, query: VendorAnalytic
       };
     }),
     profit,
+    delivery,
     statusCounts,
     topProducts,
     engagement,

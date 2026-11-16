@@ -91,6 +91,22 @@ export function planRank(plan: Pick<VendorPlan, "monthlyPrice">): number {
   return Number(plan.monthlyPrice) || 0;
 }
 
+/**
+ * Who pays the courier on a plan.
+ *
+ * A plan that takes money from the shop covers its parcels, because the fee is
+ * already part of what the subscription bought. The free rung does not: there
+ * the delivery fee comes out of what the order earned, and never more than that
+ * — the remainder is the store team's to absorb, so a small parcel can never
+ * leave a shop owing money.
+ */
+export function planCoversDelivery(plan: {
+  monthlyPrice?: number;
+  yearlyPrice?: number;
+}): boolean {
+  return Number(plan.monthlyPrice) > 0 || Number(plan.yearlyPrice) > 0;
+}
+
 export interface VendorPlanLimits {
   /** Active (published) products the plan allows. */
   maxProducts: number;
