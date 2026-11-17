@@ -3,6 +3,7 @@ import { ProductReview } from "../review/review.model";
 import { Category } from "../category/category.model";
 import { SubCategory } from "../subcategory/subcategory.model";
 import { VendorStore } from "../vendor/vendor-store.model";
+import { endPlacementForProduct } from "../vendor/featured-promotion.service";
 import { Order } from "../order/order.model";
 import { ApiError } from "../../utils/apiError";
 import { idQuery, idVariants } from "../../utils/ids";
@@ -18,7 +19,10 @@ import { VENDOR_LIVE_PRODUCT_STATUSES } from "../vendor/vendor.types";
  */
 const SORT_OPTIONS: Record<string, Record<string, 1 | -1>> = {
   rating: { rating: -1, _id: 1 },
-  featured: { isFeatured: -1, createdAt: -1, _id: 1 },
+  // A featured shelf reads in paid order: the store's own stock first, then each
+  // seller by the plan that lifted it, its billing period and its length. The
+  // key is written by the placement, so this list sorts one stored number.
+  featured: { isFeatured: -1, featuredRank: -1, createdAt: -1, _id: 1 },
   newest: { createdAt: -1, _id: 1 },
   oldest: { createdAt: 1, _id: 1 },
 };
@@ -204,7 +208,12 @@ export function formatProduct(product: any, options: FormatProductOptions = {}) 
     reviewCount: stat ? stat.count : (obj.reviewCount ?? 0),
   };
 
-  if (view === "public") return response;
+  if (view === "public") {
+    // The shelf order is the store's own ranking key: the public shape carries
+    // the shelves themselves, never the score that sorted them.
+    delete response.featuredRank;
+    return response;
+  }
 
   // Profit margin % — only meaningful when a cost and a price exist
   const investPrice =
@@ -509,7 +518,17 @@ async function buildFilterConditions(
     });
   }
 
-  if (isFeatured !== undefined) conditions.push({ isFeatured });
+  if (isFeatured !== undefined) {
+    conditions.push({ isFeatured });
+    // A placement's flag is cleared by the sweep, which may still be on its way,
+    // so the deadline the placement wrote is what says the shelf is dark. The
+    // admin view keeps the plain flag: a desk reviews what it governs.
+    if (isFeatured === true && !options.includeHidden) {
+      conditions.push({
+        $or: [{ featuredUntil: null }, { featuredUntil: { $gt: new Date() } }],
+      });
+    }
+  }
   if (inStock === true) {
     // An untracked product (no stock quantity) is always available, whatever an
     // old record's flag says. A tracked one needs units left and no manual stop.
@@ -560,8 +579,14 @@ export async function getProducts(query: GetProductsQuery, view: ProductView = "
   const conditions = await buildFilterConditions(query, { includeHidden: view === "admin" });
   const filter = conditions.length > 0 ? { $and: conditions } : {};
   // An unknown key falls back to the newest rows rather than to Mongo's natural
-  // order, which is not an order anyone asked for.
-  const sortKey = sort && (SORT_OPTIONS[sort] || PRICE_SORTS[sort]) ? sort : "newest";
+  // order, which is not an order anyone asked for. A featured shelf with no sort
+  // asked for reads in its own paid order, not in arrival order.
+  const sortKey =
+    sort && (SORT_OPTIONS[sort] || PRICE_SORTS[sort])
+      ? sort
+      : query.isFeatured === true
+        ? "featured"
+        : "newest";
   const skip = (page - 1) * limit;
 
   // The seller's name rides along for the cards, but a page that was asked
@@ -636,18 +661,10 @@ export async function updateProduct(id: string, data: UpdateProductInput) {
     data.specifications ?? current.specifications
   );
 
-  // A seller's product is lifted by a dated placement, never by a switch on
-  // this desk: two writers of one flag would leave a shelf shining after the
-  // placement that paid for it had ended. An unchanged round-trip of the edit
-  // form is not a write, so only an actual flip is refused. The store's own
-  // stock has no seller behind it and keeps the plain editorial switch.
-  const sellerOwned = Boolean((current as any).vendorId || (current as any).storeId);
-  if (data.isFeatured !== undefined && sellerOwned && data.isFeatured !== Boolean(current.isFeatured)) {
-    throw new ApiError(
-      400,
-      "A seller's product is featured from the promotions desk, where the placement carries an end date."
-    );
-  }
+  // A seller's listing is lit and dimmed by a dated placement, which is the only
+  // writer of the flag: two writers would leave a shelf shining after the
+  // placement that paid for it had ended. `isFeatured` is not part of the edit
+  // form any more, so a round-trip of the form cannot touch it either.
 
   const product = await Product.findByIdAndUpdate(id, applyStockAvailability(data), { new: true });
   if (!product) throw new ApiError(404, "Product not found");
@@ -657,6 +674,11 @@ export async function updateProduct(id: string, data: UpdateProductInput) {
 export async function deleteProduct(id: string) {
   const product = await Product.findByIdAndDelete(id);
   if (!product) throw new ApiError(404, "Product not found");
+
+  // A placement on a deleted listing has nothing left to lift; closing it keeps
+  // the promotions board from showing a shelf that points at a row nobody can
+  // open, and frees the shelf for the next listing.
+  await endPlacementForProduct(id, "The product was removed");
 }
 
 export async function getProductBySlug(slug: string, view: ProductView = "public") {

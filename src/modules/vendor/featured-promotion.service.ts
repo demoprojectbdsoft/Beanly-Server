@@ -5,7 +5,8 @@ import { VendorStore } from "./vendor-store.model";
 import { VendorSubscription } from "./vendor-subscription.model";
 import { FeaturedPromotion, type PromotionKind } from "./featured-promotion.model";
 import { notifyVendorPromotion } from "./vendor.notifications";
-import { isLiveVendorProductStatus, type VendorPlanId } from "./vendor.types";
+import { isLiveVendorProductStatus, planTierRank, type BillingCycle, type VendorPlanId } from "./vendor.types";
+import { getPlan } from "./vendor-plan.service";
 import type { GrantPromotionInput } from "./featured-promotion.validator";
 
 /**
@@ -24,9 +25,13 @@ import type { GrantPromotionInput } from "./featured-promotion.validator";
 
 /** Who is behind this placement, once the plan check has already been made. */
 export interface PromotionActor {
-  vendorId: string;
-  storeId: string;
+  /** Empty for the store team's own stock, which has no seller behind it. */
+  vendorId: string | null;
+  /** Empty for the store team's own stock, which has no shop behind it. */
+  storeId: string | null;
   plan: VendorPlanId;
+  /** The billing period the placement was bought under, when a plan paid for it. */
+  billingCycle?: BillingCycle | null;
   /** "subscription" was bought by the seller; "admin" was given by the store team. */
   source: "subscription" | "admin";
   subscriptionId?: string | null;
@@ -42,6 +47,48 @@ export interface PromotionListQuery {
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Stops a typo in the admin desk from booking a decade of shelf space. */
 const MAX_PROMOTION_DAYS = 365;
+
+/**
+ * How the featured shelves are ordered.
+ *
+ * The store's own stock always leads — the house sits at its own table. Behind
+ * it, a seller ranks by the plan that paid: the tier the pricing cards promise
+ * (advanced over detailed over basic), then a yearly period over a monthly one,
+ * then a longer placement over a shorter. The score is written onto the product
+ * while the placement runs, so a public shelf sorts one stored number instead of
+ * joining the plan table on every read.
+ */
+const ADMIN_FEATURED_RANK = 1_000_000;
+const TIER_STEP = 10_000;
+const YEARLY_BONUS = 5_000;
+
+/**
+ * The ordering key one placement writes onto what it lifts.
+ *
+ * A deleted plan still answers a placement that is already running: the row's
+ * own stored key is used in that case, and only a row without one falls back to
+ * the bottom tier.
+ */
+async function featuredRankFor(params: {
+  vendorId: string | null;
+  plan: VendorPlanId;
+  billingCycle?: BillingCycle | null;
+  days: number;
+}): Promise<number> {
+  if (!params.vendorId) return ADMIN_FEATURED_RANK;
+
+  const length = Math.max(0, Math.min(Math.round(params.days) || 0, MAX_PROMOTION_DAYS));
+  let tier = 1;
+  try {
+    tier = planTierRank(await getPlan(params.plan));
+  } catch {
+    // The plan table no longer holds this row; the placement still ranks, just
+    // on the entry tier, rather than the sweep failing over one old plan.
+    tier = 1;
+  }
+
+  return tier * TIER_STEP + (params.billingCycle === "yearly" ? YEARLY_BONUS : 0) + length;
+}
 
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * DAY_MS);
@@ -183,31 +230,44 @@ async function readPromotion(id: string) {
 }
 
 /**
- * Turns the display switch on or off for whatever the placement lifted.
+ * Turns the display switch on for whatever the placement lifted.
  *
  * This is the only place the flags are written from a placement, so the product
- * and the shop can never disagree with the row that paid for them.
+ * and the shop can never disagree with the row that paid for them. A product
+ * also takes its deadline and its shelf order from the same write.
  */
-async function applyFeaturedFlag(
+async function lightUp(
   row: { kind: PromotionKind; productId?: any; storeId?: any },
-  on: boolean,
-  endsAt?: Date | null
+  endsAt: Date,
+  rank: number
 ) {
-  if (on && row.kind === "product") {
-    await Product.updateOne({ _id: row.productId }, { $set: { isFeatured: true } });
-    return;
-  }
-
-  if (on && row.kind === "store") {
-    await VendorStore.updateOne(
-      { _id: row.storeId },
-      { $set: { isFeatured: true, featuredUntil: endsAt ?? null } }
+  if (row.kind === "product") {
+    await Product.updateOne(
+      { _id: row.productId },
+      { $set: { isFeatured: true, featuredUntil: endsAt, featuredRank: rank } }
     );
     return;
   }
 
+  await VendorStore.updateOne(
+    { _id: row.storeId },
+    { $set: { isFeatured: true, featuredUntil: endsAt } }
+  );
+}
+
+/**
+ * Puts the shelf back to dark once a placement is over.
+ *
+ * The ordering key is cleared with the flag: a product that is featured again
+ * later is ranked by the placement that lifts it then, never by a stale score
+ * from a placement that ended long ago.
+ */
+async function dim(row: { kind: PromotionKind; productId?: any; storeId?: any }) {
   if (row.kind === "product") {
-    await Product.updateOne({ _id: row.productId }, { $set: { isFeatured: false } });
+    await Product.updateOne(
+      { _id: row.productId },
+      { $set: { isFeatured: false, featuredUntil: null, featuredRank: 0 } }
+    );
     return;
   }
 
@@ -261,24 +321,38 @@ export async function createPromotion(
     await assertSlotIsFree("product", { productId: input.productId });
   } else {
     if (input.productId) throw new ApiError(400, "A store placement does not take a product");
+    // A shop always has a seller; the store's own stock has no shop to lift.
+    if (!actor.vendorId) throw new ApiError(400, "A store placement needs the seller whose shop to lift");
     await assertSlotIsFree("store", { vendorId: actor.vendorId });
   }
 
   const now = new Date();
+  const endsAt = addDays(now, Math.min(input.days, MAX_PROMOTION_DAYS));
+  const rank = await featuredRankFor({
+    vendorId: actor.vendorId,
+    plan: actor.plan,
+    billingCycle: actor.billingCycle ?? null,
+    days: input.days,
+  });
+
   const created = await FeaturedPromotion.create({
-    vendorId: new Types.ObjectId(actor.vendorId),
-    storeId: new Types.ObjectId(actor.storeId),
+    // Both are empty for the store team's own stock, which has no seller and no
+    // shop behind it; the placement is still dated and still the store's own.
+    vendorId: actor.vendorId ? new Types.ObjectId(actor.vendorId) : null,
+    storeId: actor.storeId ? new Types.ObjectId(actor.storeId) : null,
     kind: input.kind,
     productId: input.kind === "product" ? new Types.ObjectId(input.productId!) : null,
     status: "active",
     subscriptionId: actor.subscriptionId ? new Types.ObjectId(actor.subscriptionId) : null,
     plan: actor.plan,
     source: actor.source,
+    billingCycle: actor.billingCycle ?? null,
+    featuredRank: rank,
     startsAt: now,
-    endsAt: addDays(now, Math.min(input.days, MAX_PROMOTION_DAYS)),
+    endsAt,
   });
 
-  await applyFeaturedFlag(created, true, created.endsAt);
+  await lightUp(created, endsAt, rank);
   return toPromotionDto(await readPromotion(String(created._id)));
 }
 
@@ -352,7 +426,7 @@ export async function endPromotion(id: string, reason: string, scope?: { vendorI
   row.endedAt = new Date();
   row.endedReason = reason;
   await row.save();
-  await applyFeaturedFlag(row, false);
+  await dim(row);
 
   return toPromotionDto(await readPromotion(id));
 }
@@ -367,7 +441,34 @@ export async function expireDuePromotions() {
     row.endedAt = now;
     row.endedReason = row.endedReason || "Featured period ended";
     await row.save();
-    await applyFeaturedFlag(row, false);
+    await dim(row);
+  }
+
+  // Every placement still running re-states the shelf order it wrote, which
+  // repairs a row that was lit before the order existed (or edited by hand)
+  // without anybody having to press a button.
+  const live = await FeaturedPromotion.find({
+    kind: "product",
+    status: "active",
+    endsAt: { $gt: now },
+  }).lean();
+
+  for (const row of live) {
+    const stored = Number((row as any).featuredRank) || 0;
+    const rank =
+      stored > 0
+        ? stored
+        : await featuredRankFor({
+            vendorId: row.vendorId ? String(row.vendorId) : null,
+            plan: String(row.plan || "free"),
+            billingCycle: ((row as any).billingCycle as BillingCycle | null) ?? null,
+            days: Math.round((row.endsAt.getTime() - row.startsAt.getTime()) / DAY_MS),
+          });
+
+    await Product.updateOne(
+      { _id: row.productId },
+      { $set: { isFeatured: true, featuredUntil: row.endsAt, featuredRank: rank } }
+    );
   }
 
   return { expired: stale.length };
@@ -396,7 +497,7 @@ export async function endPlacementForProduct(productId: string, reason: string) 
     row.endedAt = now;
     row.endedReason = reason;
     await row.save();
-    await applyFeaturedFlag(row, false);
+    await dim(row);
   }
 
   return { ended: rows.length };
@@ -417,7 +518,7 @@ export async function endPromotionsForVendor(vendorId: string, reason: string) {
     row.endedAt = now;
     row.endedReason = reason;
     await row.save();
-    await applyFeaturedFlag(row, false);
+    await dim(row);
   }
 
   return { ended: rows.length };
@@ -438,14 +539,35 @@ export async function grantByAdmin(input: GrantPromotionInput) {
     if (!product) throw new ApiError(404, "No such product");
 
     const row = product as any;
-    // `vendorId` is what tells a seller's listing from the store's own stock: an
-    // admin-created product has an owner but no seller, and its featured flag
-    // stays the plain editorial switch on the products desk.
+    // `vendorId` is what tells a seller's listing from the store's own stock: a
+    // platform row has an owner but no seller. Both may be featured here, but a
+    // seller's row is always lifted on that seller's shop, never on another's.
     const vendorId = String(row.vendorId || "");
-    if (!Types.ObjectId.isValid(vendorId)) {
+    const sellerOwned = Types.ObjectId.isValid(vendorId);
+
+    // A grant obeys the same rule as a purchase: the shelf is bought on something
+    // a buyer can actually reach, or the paid-for space shows nothing.
+    if (row.isVisible === false) {
       throw new ApiError(
         400,
-        "This product belongs to the store itself. Feature it from the products desk."
+        `Only a listed product can be featured. "${row.title || "This product"}" is hidden from buyers`
+      );
+    }
+    if (sellerOwned && !isLiveVendorProductStatus(row.vendorProductStatus)) {
+      throw new ApiError(
+        400,
+        `Only a listed product can be featured. "${row.title || "This product"}" is ${
+          row.vendorProductStatus || "not on sale"
+        }`
+      );
+    }
+
+    // The store's own stock has no shop to read and nobody to notify, but the
+    // shelf is still dated: it goes dark on the same sweep as everyone else's.
+    if (!sellerOwned) {
+      return createPromotion(
+        { kind: "product", productId: String(product._id), days: input.days },
+        { vendorId: null, storeId: null, plan: "platform", source: "admin" }
       );
     }
 
@@ -454,23 +576,15 @@ export async function grantByAdmin(input: GrantPromotionInput) {
     const store = await VendorStore.findOne({ userId: vendorId });
     if (!store) throw new ApiError(404, "That product's seller has no store on the marketplace");
 
-    // A grant obeys the same rule as a purchase: a shelf is bought on something
-    // a buyer can actually reach, or the paid-for space shows nothing.
-    if (row.isVisible === false || !isLiveVendorProductStatus(row.vendorProductStatus)) {
-      throw new ApiError(
-        400,
-        `Only a listed product can be featured. "${row.title || "This product"}" is ${
-          row.isVisible === false ? "hidden from buyers" : row.vendorProductStatus || "not on sale"
-        }`
-      );
-    }
+    const sellerPlan = await planFor(vendorId);
 
     const created = await createPromotion(
       { kind: "product", productId: String(product._id), days: input.days },
       {
         vendorId,
         storeId: String(store._id),
-        plan: await planFor(vendorId),
+        plan: sellerPlan.plan,
+        billingCycle: sellerPlan.billingCycle,
         source: "admin",
       }
     );
@@ -491,12 +605,15 @@ export async function grantByAdmin(input: GrantPromotionInput) {
   const store = await VendorStore.findOne({ userId: vendorId });
   if (!store) throw new ApiError(404, "No store is linked to that seller");
 
+  const sellerPlan = await planFor(vendorId);
+
   const created = await createPromotion(
     { kind: "store", days: input.days },
     {
       vendorId,
       storeId: String(store._id),
-      plan: await planFor(vendorId),
+      plan: sellerPlan.plan,
+      billingCycle: sellerPlan.billingCycle,
       source: "admin",
     }
   );
@@ -535,15 +652,20 @@ export async function revokeByAdmin(id: string, reason: string) {
   return closed;
 }
 
-/** The plan to write on an admin grant: the live one, or free when there is none. */
-async function planFor(vendorId: string): Promise<VendorPlanId> {
+/** The plan and period behind an admin grant: the live one, or free when there is none. */
+async function planFor(
+  vendorId: string
+): Promise<{ plan: VendorPlanId; billingCycle: BillingCycle | null }> {
   const live = await VendorSubscription.findOne({
     vendorId: new Types.ObjectId(vendorId),
     status: { $in: ["active", "grace"] },
   })
     .sort({ endDate: -1 })
-    .select("plan")
+    .select("plan billingCycle")
     .lean();
 
-  return (live?.plan as VendorPlanId) || "free";
+  return {
+    plan: ((live as any)?.plan as VendorPlanId) || "free",
+    billingCycle: ((live as any)?.billingCycle as BillingCycle) ?? null,
+  };
 }

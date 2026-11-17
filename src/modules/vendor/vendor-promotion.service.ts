@@ -4,8 +4,10 @@ import { Product } from "../product/product.model";
 import * as promotionService from "./featured-promotion.service";
 import { requireTradingStore } from "./vendor-store.service";
 import { assertWithinLimit } from "./vendor-subscription.service";
-import { isLiveVendorProductStatus } from "./vendor.types";
+import { isLiveVendorProductStatus, type BillingCycle } from "./vendor.types";
 import type { FeatureProductInput, PromotionQuery } from "./featured-promotion.validator";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The seller's featured placements.
@@ -57,13 +59,22 @@ export async function featureMyProduct(userId: string, input: FeatureProductInpu
   // says how many they have and how to get more.
   const state = await assertWithinLimit(userId, "featured");
 
-  const days = state.plan.featuredDurationDays;
-  if (days <= 0) {
+  const planDays = state.plan.featuredDurationDays;
+  if (planDays <= 0) {
     throw new ApiError(
       403,
       `Your ${state.plan.name} plan has no featured period. Upgrade to buy shelf space.`
     );
   }
+
+  // The package states the length, and the package is also the ceiling: a
+  // placement never outlives the period that paid for it. A plan with a day or
+  // less left still gives one honest day, and the expiry sweep then closes it.
+  const until = state.effectiveUntil;
+  const remainingDays = until
+    ? Math.max(1, Math.ceil((until.getTime() - Date.now()) / DAY_MS))
+    : planDays;
+  const days = Math.min(planDays, remainingDays);
 
   return promotionService.createPromotion(
     { kind: "product", productId: input.productId, days },
@@ -71,6 +82,9 @@ export async function featureMyProduct(userId: string, input: FeatureProductInpu
       vendorId: userId,
       storeId: String(store._id),
       plan: state.plan.id,
+      // The period as it was bought, which is the second thing the featured
+      // shelf ranks on after the plan tier.
+      billingCycle: (state.subscription?.billingCycle as BillingCycle) ?? null,
       source: "subscription",
       // The period that was live when the shelf was bought, so the row can be
       // read back against a payment history that later changed.

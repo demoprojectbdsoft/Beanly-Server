@@ -92,6 +92,20 @@ export function planRank(plan: Pick<VendorPlan, "monthlyPrice">): number {
 }
 
 /**
+ * Which tier a plan sits on, for ordering the featured shelves.
+ *
+ * The featured shelves rank a vendor by its plan, and the rung that is promised
+ * on the pricing cards is the analytics tier: basic, detailed, advanced. A
+ * price is not used here because the store team re-prices and adds plans, while
+ * the tier is the promise a seller bought.
+ */
+export function planTierRank(plan: Pick<VendorPlan, "analytics">): number {
+  if (plan.analytics === "advanced") return 3;
+  if (plan.analytics === "detailed") return 2;
+  return 1;
+}
+
+/**
  * Who pays the courier on a plan.
  *
  * A plan that takes money from the shop covers its parcels, because the fee is

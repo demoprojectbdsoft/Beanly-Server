@@ -75,6 +75,17 @@ const productSchema = new Schema(
     },
 
     isFeatured: { type: Boolean, default: false },
+    /**
+     * What a running featured placement writes, and what its end clears.
+     *
+     * `featuredUntil` is the placement's own deadline, so a row whose sweep is
+     * still on its way is already known to be dark. `featuredRank` is the
+     * ordering key of the shelf: the store's own stock sits above every seller,
+     * then a seller ranks by plan tier, billing period and the placement's
+     * length. Both fields belong to the placement, never to a listing form.
+     */
+    featuredUntil: { type: Date, default: null },
+    featuredRank: { type: Number, default: 0 },
     offerEndDate: { type: Date },
     offerExpired: { type: Boolean, default: false }, // set true by cron once offer lapses
 

@@ -35,7 +35,9 @@ export const createProductSchema = z.object({
   sku: z.string().optional(),
   description: z.string().optional(),
   specifications: z.record(z.string(), z.any()).optional(),
-  isFeatured: z.boolean().optional(),
+  // `isFeatured` is deliberately absent: a shelf is lit by a dated placement on
+  // the promotions desk, never by a listing form, so no create or update can
+  // leave a product featured past the placement that paid for it.
   offerEndDate: z.coerce.date().optional().nullable(),
   warrantyPeriodMonths: z.number().int().nonnegative().max(120).optional(),
   warrantyType: z.enum(WARRANTY_TYPE_VALUES).optional(),
