@@ -493,7 +493,7 @@ A visitor's view is counted without a session; `attachUser` only lets the API re
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
 | `GET` | `/promotions` | 👑 | List all featured placements |
-| `POST` | `/promotions` | 👑 | Grant featured placement |
+| `POST` | `/promotions` | 👑 | Grant featured placement (a seller's listing, a shopfront, or the store's own stock) |
 | `DELETE` | `/promotions/:id` | 👑 | End placement early |
 | `GET` | `/promotions/expire` | ⏰ | Daily sweep (close expired) |
 
@@ -957,6 +957,7 @@ The price list is data, not code:
 - `planId` is a slug derived from the name, so a plan added later needs no deploy
 - A plan may run a time-boxed price offer (`offerPercent` + `offerEndsAt`) without touching its real price
 - Entitlements gate the seller's screens, so a plan that does not sell a report cannot open it
+- A plan's `featuredDurationDays` is a ceiling, not a promise: a vendor placement is capped at the days left in the live period, and the vendor board shows the capped number
 - `GET /vendor-subscription/expire` closes lapsed periods after the grace days; a closed subscription ends the seller's featured placements
 
 ### Scheduled Jobs
@@ -966,7 +967,7 @@ The price list is data, not code:
 | Demo restore | `GET/POST /demo/restore` | 12:00 AM | Puts the demo store back to its seed state |
 | Delivery sweep | `GET /deliveries/expire` | Every 10 minutes | Closes rider offers nobody answered |
 | Vendor periods | `GET /vendor-subscription/expire` | 12:45 AM | Ends lapsed subscriptions after their grace days |
-| Featured placements | `GET /promotions/expire` | 1:00 AM | Ends placements whose `endsAt` has passed |
+| Featured placements | `GET /promotions/expire` | 1:00 AM | Ends placements whose `endsAt` has passed and re-states the rank of anything still live |
 | Product offers | `GET /products/expire` | Vercel Cron only | Flags products whose offer window closed |
 
 Local schedules run on `node-cron` in `src/index.ts` on `CRON_TIMEZONE`; the same routes are listed in `vercel.json` for the serverless deployment.
@@ -1036,13 +1037,27 @@ if (redemption) {
 - **Store**: Feature entire vendor storefront
 
 **Rules:**
-- Only one module writes `Product.isFeatured` and `VendorStore.isFeatured`
+- Only one module writes `Product.isFeatured` and `VendorStore.isFeatured` — the create and update product routes no longer accept the flag
 - Vendor can buy product slots (plan determines duration/limit)
-- Admin can grant product OR store placements (1-365 days)
+- A vendor placement never outlives the period that paid for it: `min(plan.featuredDurationDays, days left in the live subscription)`
+- Admin can grant product OR store placements (1-365 days), including the store's own stock (`vendorId: null`), which skips the seller checks and sends no notification
 - State derived from `endsAt` + status (always accurate)
-- Daily sweep closes expired placements
-- Unpublishing/archiving product ends its placement
+- Every placement also stamps the product with `featuredUntil` and `featuredRank`; public reads filter on `featuredUntil`, so a lapsed placement disappears before the sweep runs
+- Daily sweep closes expired placements and re-states the rank of anything still live
+- Unpublishing/archiving/deleting a product ends its placement
 - Expired subscription ends all vendor's placements
+
+**Shelf order** (`featuredRank`, highest first, `createdAt` then `_id` to break ties):
+
+| Source | Rank |
+| --- | --- |
+| Store's own stock | `1,000,000` |
+| Vendor, advanced plan + yearly | `30,000 + 5,000 + days` |
+| Vendor, advanced plan + monthly | `30,000 + days` |
+| Vendor, detailed plan | `20,000 + (yearly ? 5,000 : 0) + days` |
+| Vendor, basic plan | `10,000 + (yearly ? 5,000 : 0) + days` |
+
+The tier comes from the plan's analytics level (`basic` 1 / `detailed` 2 / `advanced` 3); a deleted or unknown plan falls back to tier 1 instead of failing the sweep.
 
 **Placement States:**
 ```typescript
