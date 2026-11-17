@@ -87,7 +87,7 @@ export const publicStoreQuerySchema = z.object({
         value === "true" || value === true ? true : value === "false" || value === false ? false : undefined,
       z.boolean().optional()
     ),
-  sort: z.enum(["featured", "rating", "newest", "popular"]).optional().default("featured"),
+  sort: z.enum(["featured", "latest", "rating", "newest", "popular"]).optional().default("featured"),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().min(1).max(50).default(12),
 });

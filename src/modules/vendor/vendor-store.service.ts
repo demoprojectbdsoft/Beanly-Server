@@ -1,5 +1,7 @@
+import { Types } from "mongoose";
 import { ApiError } from "../../utils/apiError";
 import { VendorStore } from "./vendor-store.model";
+import { VendorOrder } from "./vendor-order.model";
 import type { StoreQuery, UpdateStoreInput, PublicStoreQuery } from "./vendor-store.validator";
 
 /**
@@ -182,8 +184,56 @@ export function toPublicStoreDto(store: any) {
     reviewCount: dto.reviewCount,
     rating: dto.rating,
     completedOrders: dto.completedOrders,
+    // Filled by `withSuccessRates` on the two public reads; a store that has
+    // never closed a parcel reads 0 rather than a misleading 100.
+    successRate: 0,
     createdAt: dto.createdAt,
   };
+}
+
+/**
+ * How often a shop's parcels actually arrived.
+ *
+ * Only parcels that reached an end are counted: a group still moving is
+ * neither a success nor a failure, so the figure is delivered against
+ * delivered-plus-stopped. A shop with nothing closed yet reads 0 — a brand-new
+ * seller has no record to boast about, and 100% off zero parcels would be a
+ * number the shop never earned.
+ */
+async function successRatesOf(storeIds: string[]): Promise<Map<string, number>> {
+  const ids = storeIds
+    .filter((id) => Types.ObjectId.isValid(id))
+    .map((id) => new Types.ObjectId(id));
+  if (ids.length === 0) return new Map();
+
+  const rows = await VendorOrder.aggregate([
+    { $match: { storeId: { $in: ids } } },
+    {
+      $group: {
+        _id: "$storeId",
+        delivered: { $sum: { $cond: [{ $eq: ["$status", "delivered"] }, 1, 0] } },
+        stopped: {
+          $sum: { $cond: [{ $in: ["$status", ["cancelled", "rejected"]] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+
+  const rates = new Map<string, number>();
+  for (const row of rows) {
+    const closed = (Number(row.delivered) || 0) + (Number(row.stopped) || 0);
+    rates.set(
+      String(row._id),
+      closed > 0 ? Math.round(((Number(row.delivered) || 0) / closed) * 100) : 0
+    );
+  }
+  return rates;
+}
+
+/** Folds the closed-parcel record into the public rows that were already mapped. */
+async function withSuccessRates<T extends { _id: string }>(stores: T[]): Promise<(T & { successRate: number })[]> {
+  const rates = await successRatesOf(stores.map((store) => store._id));
+  return stores.map((store) => ({ ...store, successRate: rates.get(store._id) ?? 0 }));
 }
 
 /** The store a public page reads: visible, active and not suspended. */
@@ -200,7 +250,9 @@ export async function getVisibleStoreBySlug(slug: string) {
 
 /** The same shop for a public page, with the private fields off. */
 export async function getPublicStoreBySlug(slug: string) {
-  return toPublicStoreDto(await getVisibleStoreBySlug(slug));
+  const store = toPublicStoreDto(await getVisibleStoreBySlug(slug));
+  const [withRate] = await withSuccessRates([store]);
+  return withRate;
 }
 
 const PUBLIC_STORE_SORTS: Record<string, Record<string, 1 | -1>> = {
@@ -208,6 +260,9 @@ const PUBLIC_STORE_SORTS: Record<string, Record<string, 1 | -1>> = {
   rating: { rating: -1, reviewCount: -1 },
   newest: { createdAt: -1 },
   popular: { completedOrders: -1, lifetimeSales: -1 },
+  // The placement granted most recently runs the longest, so it leads: the
+  // featured rail reads as "what was just lit up" rather than an old favourite.
+  latest: { featuredUntil: -1, createdAt: -1 },
 };
 
 /**
@@ -244,7 +299,7 @@ export async function listPublicStores(query: PublicStoreQuery) {
   ]);
 
   return {
-    stores: rows.map(toPublicStoreDto),
+    stores: await withSuccessRates(rows.map(toPublicStoreDto)),
     total,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
   };
