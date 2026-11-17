@@ -4,7 +4,7 @@
 
 ### *REST API for a full-stack e-commerce platform*
 
-**Express 5 + MongoDB backend powering catalog, orders, multi-vendor marketplace, loyalty, warranties, and comprehensive CMS**
+**Express 5 + MongoDB backend powering catalog, orders, delivery & rider operations, multi-vendor marketplace, loyalty, and comprehensive CMS**
 
 [![Live API](https://img.shields.io/badge/API-Live-success?style=for-the-badge)](https://sparq-api.vercel.app/api)
 [![Backend Repo](https://img.shields.io/badge/Backend-Repository-2ea44f?style=for-the-badge)](https://github.com/demoprojectbdsoft/Sparq-Server)
@@ -46,8 +46,9 @@ Sparq-Server is the backend API for the [Sparq](https://github.com/demoprojectbd
 | **Business Logic** | All pricing, discounts, shipping, points, and totals computed server-side |
 | **Authorization** | JWT verification, role guards, ownership checks on every request |
 | **Data Integrity** | Transactional order processing, atomic points operations, stock management |
-| **Scheduled Jobs** | Demo restore, warranty expiry, delivery cleanup, subscription renewals |
-| **Email Delivery** | Transactional emails via SMTP (orders, warranties, password resets) |
+| **Delivery & Riders** | Rider offers, accept/decline, hand-over codes, payouts, live location |
+| **Scheduled Jobs** | Demo restore, unanswered-offer sweep, subscription, placement and product-offer expiry |
+| **Email Delivery** | Transactional emails via SMTP (order and delivery updates, password resets, admin replies) |
 
 **❌ What This Server Does NOT Own**
 
@@ -79,7 +80,6 @@ graph TB
     
     subgraph "External"
         K[SMTP Server]
-        L[ImgBB CDN]
     end
     
     A --> B
@@ -94,7 +94,6 @@ graph TB
     H --> I
     I --> J
     H --> K
-    H --> L
     
     style D fill:#f59e0b
     style H fill:#60a5fa
@@ -190,9 +189,11 @@ src/modules/
 │   └── product.types.ts          # TypeScript types
 │
 ├── order/                        # Order processing
+├── delivery/                     # Rider offers, tracking, hand-over codes
+├── rider/                        # Rider applications
 ├── user/                         # User management
-├── vendor/                       # Vendor marketplace
-├── warranty/                     # Warranty system
+├── vendor/                       # Vendor marketplace, plans, analytics
+├── file/                         # Application documents
 └── ...
 ```
 
@@ -235,8 +236,8 @@ erDiagram
     
     Order ||--|{ OrderItem : contains
     Order ||--|| Transaction : has
-    Order ||--o{ Warranty : generates
     Order ||--o{ VendorOrder : splits_into
+    Order ||--o{ Delivery : ships_via
     
     Product ||--o{ OrderItem : ordered_in
     Product ||--o{ Review : has
@@ -252,8 +253,10 @@ erDiagram
     
     Coupon ||--o{ Order : applied_to
     
-    Warranty ||--|| Order : from
-    Warranty ||--|| Product : covers
+    Delivery ||--|| DeliveryCode : hands_over_with
+    User ||--o{ Delivery : rides
+    User ||--o{ RiderApplication : applies
+    User ||--o{ Activity : receives
     
     Review ||--|| Product : reviews
     Review ||--|| User : by
@@ -274,7 +277,8 @@ All responses: `{ success: boolean, message: string, data?: any }`
 | 🔐 | **Bearer** | Valid JWT token required |
 | 👑 | **Admin** | Admin or demo admin role required |
 | ⏰ | **Cron** | CRON_SECRET or Vercel cron header required |
-| 🔑 | **Internal** | INTERNAL_API_KEY header required (frontend only) |
+| 🛵 | **Rider** | Approved rider role required |
+| 🔑 | **Internal** | `x-internal-key` matching INTERNAL_API_KEY (storefront only) |
 
 ### Authentication & Users
 
@@ -345,7 +349,20 @@ All responses: `{ success: boolean, message: string, data?: any }`
 ?sort=            # newest | price-asc | price-desc | rating | popular
 ?page=1           # Page number
 ?limit=12         # Items per page
+?minDiscount=     # Minimum discount percentage
+?maxDiscount=     # Maximum discount percentage
+?badge=           # Products carrying a badge
+?minRating=       # Minimum rating
 ```
+
+#### Product Engagement
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| `POST` | `/engagement/products/:productId` | 🌐 | Record a view, a cart add or a purchase |
+| `GET` | `/engagement/products` | 👑 | Views versus sales per product (admin desk) |
+
+A visitor's view is counted without a session; `attachUser` only lets the API recognise a seller looking at their own listing, so the seller's dashboard can subtract those views from its numbers.
 
 #### Homepage Content
 
@@ -414,11 +431,40 @@ All responses: `{ success: boolean, message: string, data?: any }`
 }
 ```
 
+#### Delivery & Tracking
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| `GET` | `/deliveries/admin` | 👑 | Every delivery (status, rider, date filters) |
+| `GET` | `/deliveries/admin/overview` | 👑 | Counters for the delivery board |
+| `GET` | `/deliveries/admin/riders` | 👑 | Approved riders with availability and load |
+| `GET` | `/deliveries/admin/payouts` | 👑 | What each delivered job paid the rider |
+| `GET` | `/deliveries/admin/order/:orderId` | 👑 | Every attempt made for one order |
+| `POST` | `/deliveries` | 👑 | Offer an order to a rider (fee, distance, note) |
+| `PATCH` | `/deliveries/:id/reassign` | 👑 | Hand the job to another rider |
+| `PATCH` | `/deliveries/:id/cancel` | 👑 | Stop an offer or a running job |
+| `GET` | `/deliveries/tracking/:orderId` | 🔐 | Customer view: rider, steps, last position |
+| `GET` | `/deliveries/tracking/:orderId/code` | 🔐 | Buyer's hand-over code and its expiry |
+| `POST` | `/deliveries/tracking/:orderId/code` | 🔐 | Regenerate the hand-over code |
+| `GET` | `/deliveries` | 🛵 | Rider's own jobs |
+| `GET` | `/deliveries/stats` | 🛵 | Rider's counters and earnings |
+| `GET` | `/deliveries/:id` | 🛵 | One of the rider's own jobs |
+| `GET` | `/deliveries/:id/invoice` | 🛵 | Payout invoice for a delivered job |
+| `POST` | `/deliveries/:id/accept` | 🛵 | Accept the offer |
+| `POST` | `/deliveries/:id/decline` | 🛵 | Decline with a reason |
+| `PATCH` | `/deliveries/:id/status` | 🛵 | `picked_up` → `out_for_delivery` |
+| `POST` | `/deliveries/:id/complete` | 🛵 | Hand over by entering the buyer's code |
+| `POST` | `/deliveries/:id/location` | 🛵 | Push the rider's position for the live map |
+| `GET` | `/deliveries/expire` | ⏰ | Sweep offers nobody answered |
+
+**Tracking payload:** rider name, phone and vehicle, the ordered steps with a timestamp for each, the shop's pick-up location, and the last shared position — the map the tracking page draws.
+
 #### Transactions
 
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
-| `GET` | `/transactions` | 🔐 | List payment records |
+| `GET` | `/transactions` | 🔐 | Payment records (customer: own, admin: all) |
+| `GET` | `/transactions/vendor` | Vendor | Payments for the seller's own rows |
 
 ### Marketing
 
@@ -457,6 +503,7 @@ All responses: `{ success: boolean, message: string, data?: any }`
 
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
+| `POST` | `/vendor-applications/status` | 🔑 | Auth-layer lookup after the password check |
 | `POST` | `/vendor-applications` | 🔐 | Submit application |
 | `GET` | `/vendor-applications/mine` | 🔐 | Get own applications |
 | `POST` | `/vendor-applications/mine/cancel` | 🔐 | Withdraw application |
@@ -500,6 +547,15 @@ pending → accepted → processing → ready_for_shipment
 rejected
 ```
 
+#### Vendor Plans (Price List)
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| `GET` | `/vendor-plans` | 🌐 | Public price list (pricing cards, seller's plan desk) |
+| `POST` | `/vendor-plans` | 👑 | Add a plan |
+| `PATCH` | `/vendor-plans/:planId` | 👑 | Edit a plan |
+| `DELETE` | `/vendor-plans/:planId` | 👑 | Remove a plan |
+
 #### Vendor Subscription
 
 | Method | Endpoint | Access | Description |
@@ -533,6 +589,29 @@ rejected
 |--------|----------|--------|-------------|
 | `GET` | `/vendor-analytics?range=` | Vendor | Sales report (7/30/90/365 days) |
 
+#### Vendor Desk (Platform Earnings)
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| `GET` | `/vendor-desk?months=` | 👑 | Subscriptions, commission and sales trend (3-12 months) |
+
+### Rider Onboarding
+
+#### Rider Applications
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| `POST` | `/rider-applications/status` | 🔑 | Auth-layer lookup after the password check |
+| `POST` | `/rider-applications` | 🔐 | Submit or resubmit an application |
+| `GET` | `/rider-applications/mine` | 🔐 | Get own application |
+| `PATCH` | `/rider-applications/mine` | 🔐 | Update own application (licence, vehicle, availability) |
+| `POST` | `/rider-applications/mine/cancel` | 🔐 | Withdraw the application |
+| `GET` | `/rider-applications` | 👑 | List applications |
+| `GET` | `/rider-applications/:id` | 👑 | Application with its uploaded documents |
+| `PATCH` | `/rider-applications/:id/review` | 👑 | Approve (grants the rider role) or reject |
+
+**Application contents:** personal details, emergency contact, service area with coordinates, vehicle and licence, uploaded documents (licence, national ID, vehicle papers), availability (days, time slots, maximum distance) and experience. A rejection keeps the same row so a resubmission updates it and the review history stays in one place.
+
 ### Support
 
 #### Reviews
@@ -543,19 +622,11 @@ rejected
 | `POST` | `/reviews` | 🔐 | Create review |
 | `PATCH` | `/reviews/:id` | 🔐 | Update own review |
 | `DELETE` | `/reviews/:id` | 🔐 | Delete review (owner or admin) |
+| `GET` | `/reviews/vendor` | Vendor | Reviews on the seller's own products |
 
-#### Warranties
+#### Product Warranty Fields
 
-| Method | Endpoint | Access | Description |
-|--------|----------|--------|-------------|
-| `GET` | `/warranties/mine` | 🔐 | List own warranties |
-| `GET` | `/warranties/order/:orderId/product/:productId` | 🔐 | Get specific warranty |
-| `POST` | `/warranties/claim/:id` | 🔐 | File warranty claim |
-| `GET` | `/warranties` | 👑 | List all warranties |
-| `PATCH` | `/warranties/claim/:id` | 👑 | Update claim status |
-| `POST` | `/warranties/extend/:id` | 👑 | Extend warranty coverage |
-| `POST` | `/warranties/email/:id` | 👑 | Email customer |
-| `GET` | `/warranties/expire` | ⏰ | Daily sweep (close expired) |
+A warranty is a property of the listing, not a workflow of its own. The product document carries `warrantyPeriodMonths` (0-120), `warrantyType` and `warrantyTerms`; the admin and vendor product forms write them and the product page and admin product view read them. There is no claim API: nothing is issued at delivery, and no warranty record, dashboard or customer claim endpoint exists.
 
 #### Contact & Messages
 
@@ -589,6 +660,16 @@ rejected
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
 | `GET/POST` | `/demo/restore` | ⏰ | Restore demo changes |
+
+#### Files (Application Documents)
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| `POST` | `/files` | 🔑 | Store one document (JSON body, 12 MB cap) |
+| `GET` | `/files/:id` | 🌐 | Read a stored document |
+| `GET` | `/files/:id/:name` | 🌐 | Read it with the original filename in the URL |
+
+The bytes are kept in MongoDB beside the application that used them, so a licence or a scanned certificate survives as long as the application does. Reading is open because a browser preview is a plain request with no header to attach a key to; writing requires the storefront's internal key.
 
 #### Mail (Internal)
 
@@ -661,14 +742,12 @@ stateDiagram-v2
     note right of Delivered
         Payment confirmed
         Points credited
-        Warranties issued
         Sell count updated
     end note
     
     note right of Cancelled
         Stock restored
         Points refunded
-        Warranties voided
         Transaction failed
     end note
 ```
@@ -733,23 +812,6 @@ async function applyDelivery(orderId) {
   
   // 4. Update membership tier
   await updateMembershipTier(order.userId);
-  
-  // 5. Issue warranties
-  for (const item of order.items) {
-    if (item.product.warrantyPeriodMonths > 0) {
-      await Warranty.create({
-        userId: order.userId,
-        orderId: order._id,
-        productId: item.productId,
-        warrantyType: item.product.warrantyType,
-        warrantyPeriodMonths: item.product.warrantyPeriodMonths,
-        warrantyTerms: item.product.warrantyTerms,
-        startDate: new Date(),
-        expiryDate: addMonths(new Date(), item.product.warrantyPeriodMonths),
-        status: 'active'
-      });
-    }
-  }
 }
 ```
 
@@ -843,57 +905,71 @@ await User.findOneAndUpdate(
 - 💎 **Platinum**: 4,000 - 9,999 points
 - 💎 **Diamond**: 10,000+ points
 
-### Warranty System
+### Product Warranty Fields
+
+A warranty is a property of the listing, not a workflow of its own.
 
 **5 Warranty Types:**
 
-| Type | Covered By | Can Extend? |
-|------|-----------|-------------|
-| `manufacturer-warranty` | Brand | ❌ |
-| `seller-warranty` | Store | ❌ |
-| `extended-warranty` | Store (paid plan) | ✅ |
-| `other` | Per terms | ❌ |
-| `none` | Nobody | N/A |
+| Type | Covered By |
+|------|-----------|
+| `manufacturer-warranty` | The brand's own service centre |
+| `seller-warranty` | The store that sold the item |
+| `extended-warranty` | The store, past the usual period |
+| `other` | Per the terms written on the listing |
+| `none` | Nobody |
 
-**Lifecycle:**
+**Rules:**
+- `warrantyPeriodMonths` (0-120), `warrantyType` and `warrantyTerms` sit on the product document
+- The admin product form and the vendor product form write them; the product page, the compare table and the admin product view read them
+- `warrantyPeriodMonths: 0` or `warrantyType: "none"` means the item is sold without cover
+- Nothing is issued at delivery and there is no claim record, dashboard page, cron job or claim endpoint — the customer's warranty is the promise printed on the product page, and a claim reaches the shop through the support desk like any other message
+
+### Delivery & Rider Operations
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active: Issued on Delivery
-    Active --> ClaimSubmitted: Customer Files
-    ClaimSubmitted --> UnderReview: Admin Reviews
-    UnderReview --> Resolved: Approved
-    UnderReview --> Expired: Rejected
-    Active --> Expired: Date Passed
-    Expired --> Active: Extended (Extended warranty only)
-    Resolved --> [*]
-    Expired --> [*]
+    [*] --> assigned: Store offers the order
+    assigned --> accepted: Rider accepts
+    assigned --> declined: Rider declines (reason)
+    assigned --> cancelled: Store cancels or the offer lapses
+    accepted --> picked_up: Rider collects the parcel
+    picked_up --> out_for_delivery: Rider leaves for the address
+    out_for_delivery --> delivered: Buyer's code entered
+    out_for_delivery --> delivered: Buyer confirms on the tracking page
+    delivered --> [*]
 ```
 
-**Coverage Creation:**
-```javascript
-// Automatic on delivery
-if (product.warrantyType !== 'none' && product.warrantyPeriodMonths >= 1) {
-  await Warranty.create({
-    userId,
-    orderId,
-    productId,
-    warrantyType: product.warrantyType,        // Copied to record
-    warrantyPeriodMonths: product.warrantyPeriodMonths,
-    warrantyTerms: product.warrantyTerms,
-    startDate: deliveryDate,
-    expiryDate: addMonths(deliveryDate, product.warrantyPeriodMonths),
-    status: 'active'
-  });
-}
-```
+**Rules:**
+- **One rider per order**: an order holds one live offer, and another rider cannot be offered it until the first declines, the offer lapses or the store cancels
+- **Offer window**: an offer carries a fee (the order's shipping fee, or the store's default) plus an expiry; `GET /deliveries/expire` closes unanswered offers so the order is free again
+- **Forward only**: the rider moves `picked_up` → `out_for_delivery` → `delivered`; a step cannot be skipped or rewound
+- **Hand-over code**: six digits, stored only as `sha256(deliveryId:code)` with an expiry and a wrong-attempt budget. Only the buyer's tracking page is given the code — never a rider endpoint and never a list
+- **Delivery pays the rider**: reaching `delivered` books the fee (`feePaidVia: "code"` or `"customer"`), and the rider's earnings are the sum of delivered fees. There is no separate payout step
+- **Live position**: while a job is live the rider pushes a position, and the customer's tracking map reads the last one
+- **Reassignment**: cancelling and offering again is how a job changes hands, so every attempt stays in the order's history
 
-**Extension (Extended Warranty Only):**
-- Maximum 3 extensions per warranty
-- Each extension adds 1-60 months
-- Extended from later of: expiry date or today
-- Only `extended-warranty` type can be extended
-- History tracked with reason and dates
+### Vendor Subscription Plans
+
+The price list is data, not code:
+
+- Plans live in the `SubscriptionPlan` collection and the store team edits them: name, monthly and yearly price, product cap, featured slots and duration, active-coupon cap, analytics tier, report depth, export level (`none` / `csv` / `csv+pdf`), store customisation, campaign priority, support tier, commission percent, grace days, billing cycles and sort order
+- `planId` is a slug derived from the name, so a plan added later needs no deploy
+- A plan may run a time-boxed price offer (`offerPercent` + `offerEndsAt`) without touching its real price
+- Entitlements gate the seller's screens, so a plan that does not sell a report cannot open it
+- `GET /vendor-subscription/expire` closes lapsed periods after the grace days; a closed subscription ends the seller's featured placements
+
+### Scheduled Jobs
+
+| Job | Route | Local cron | What it does |
+|-----|-------|-----------|--------------|
+| Demo restore | `GET/POST /demo/restore` | 12:00 AM | Puts the demo store back to its seed state |
+| Delivery sweep | `GET /deliveries/expire` | Every 10 minutes | Closes rider offers nobody answered |
+| Vendor periods | `GET /vendor-subscription/expire` | 12:45 AM | Ends lapsed subscriptions after their grace days |
+| Featured placements | `GET /promotions/expire` | 1:00 AM | Ends placements whose `endsAt` has passed |
+| Product offers | `GET /products/expire` | Vercel Cron only | Flags products whose offer window closed |
+
+Local schedules run on `node-cron` in `src/index.ts` on `CRON_TIMEZONE`; the same routes are listed in `vercel.json` for the serverless deployment.
 
 ### Discount Coupons
 
@@ -1105,28 +1181,69 @@ async function calculateOrderTotals(items: CartItem[]) {
 }
 ```
 
+**5. Internal Key on Store-Backed Endpoints**
+```javascript
+// middlewares/internal.middleware.ts
+// POST /mail/reset-password and POST /files are called by the storefront on
+// its own behalf, never by a browser.
+const expected = process.env.INTERNAL_API_KEY;
+if (!expected) throw new ApiError(500, "INTERNAL_API_KEY is not configured");
+if (req.headers["x-internal-key"] !== expected) {
+  throw new ApiError(401, "Unauthorized: a valid internal key is required");
+}
+```
+
+**6. Scheduled Job Guard**
+```javascript
+// middlewares/cron.middleware.ts
+// Vercel sends `Authorization: Bearer <CRON_SECRET>` (and always x-vercel-cron).
+// Anything else must be a signed-in store admin, so a sweep can be re-run by hand
+// without opening the route to the public.
+if (req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`) return next();
+if (req.headers["x-vercel-cron"] === "1") return next();
+// ...otherwise requireAuth + role === "admin"
+```
+
+**7. Hand-Over Code**
+```javascript
+// modules/delivery/delivery.otp.ts
+// The code is never stored in the clear, and it is bound to one delivery,
+// so two jobs with the same six digits never share a hash.
+function hashCode(deliveryId, code) {
+  return crypto.createHash("sha256").update(`${deliveryId}:${code}`).digest("hex");
+}
+// Each row carries { code, codeHash, expiresAt, attempts }; a wrong attempt is
+// spent from the budget, and an expired row is never accepted.
+```
+
 ### Security Best Practices
 
 ✅ **Implemented:**
 - JWT verification via JWKS (no shared secret)
 - Role-based access control with per-role suspension
 - Ownership checks on private resources
+- Role-scoped reads (a customer sees their own payments, a seller only their own rows)
 - Server-side price/total calculation
 - Atomic points operations (no double-spend)
 - Transactional order processing
 - Input validation (Zod schemas)
 - MongoDB injection protection (Mongoose)
 - Password reset with one-time tokens
+- Internal key on store-backed endpoints (`x-internal-key`)
+- Cron guard (CRON_SECRET, Vercel cron header, or a signed-in admin)
+- Delivery hand-over codes hashed per delivery, with expiry and an attempt budget
+- Document uploads checked by MIME type and size (8 MB at the storefront door, 12 MB body at the API)
+- Account data export for the signed-in user only
 - HTTPS in production (Vercel)
 - Environment variable secrets
 - Demo admin sandboxing
 - Email header sanitization (Nodemailer)
 
 ⚠️ **Known Gaps:**
-- Transaction endpoint lacks ownership filter (anyone can list all)
 - No rate limiting
-- No request logging/audit trail
+- No request logging/audit trail (the activity feed records domain events, not HTTP calls)
 - CORS currently wide open
+- No CSP or security headers are set by this API or the storefront
 
 ---
 
@@ -1197,9 +1314,12 @@ sparq-server/
 │   │   ├── wishlist/                 # Wishlist
 │   │   ├── order/                    # Order processing
 │   │   ├── order-status/             # Status history
+│   │   ├── delivery/                 # Rider offers, tracking, hand-over codes
+│   │   ├── rider/                    # Rider applications
 │   │   ├── transaction/              # Payments
 │   │   ├── review/                   # Product reviews
-│   │   ├── warranty/                 # Warranty system
+│   │   ├── product-engagement/       # Views versus sales counters
+│   │   ├── file/                     # Application documents
 │   │   ├── coupon/                   # Discount coupons
 │   │   ├── promo/                    # Promo banners
 │   │   ├── slide/                    # Hero slider
@@ -1217,9 +1337,11 @@ sparq-server/
 │   │       ├── vendor-product/
 │   │       ├── vendor-order/
 │   │       ├── vendor-subscription/
+│   │       ├── vendor-plan/          # Editable price list
 │   │       ├── vendor-coupon/
 │   │       ├── vendor-promotion/
-│   │       └── vendor-analytics/
+│   │       ├── vendor-analytics/
+│   │       └── vendor-desk/          # Platform earnings report
 │   │
 │   └── utils/
 │       ├── apiError.ts               # Error class
@@ -1231,7 +1353,9 @@ sparq-server/
 │       ├── roles.ts                  # Role utilities
 │       ├── ids.ts                    # ObjectId helpers
 │       ├── mailer.ts                 # SMTP email
-│       └── emailTemplates.ts         # Email HTML
+│       ├── emailTemplates.ts         # Email HTML
+│       ├── profilePatch.ts           # Field-level profile rules
+│       └── warehouse.ts              # Pick-up point a stock item sits in
 │
 ├── api/
 │   └── index.ts                      # Vercel serverless entry
@@ -1348,7 +1472,10 @@ Server runs at `http://localhost:5000`
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DEMO_ADMIN_EMAIL` | Demo admin account email | — |
-| `CRON_TIMEZONE` | Timezone for cron jobs | `UTC` |
+| `STORE_NAME` | Store name in outbound mail (only used when Site Settings has no `siteName`) | `Sparq` |
+| `STORE_INBOX` | Inbox for order notifications (only when Site Settings has no `supportEmail`) | Falls back to the settings value |
+| `CONTACT_INBOX` | Inbox for contact-form mail (only when Site Settings has no `contactEmail`) | Falls back to `supportEmail` |
+| `CRON_TIMEZONE` | Timezone for the in-process cron jobs | `UTC` |
 | `NODE_ENV` | Environment | `development` |
 
 ### Security Notes
@@ -1365,20 +1492,20 @@ Server runs at `http://localhost:5000`
 ### Available Scripts
 
 ```bash
-# Development (watch mode)
+# Development (tsx watch, restarts on save)
 npm run dev
 
-# Production build
+# Compile TypeScript to dist/
 npm run build
 
-# Start production server
+# Start the compiled server
 npm start
 
-# Linting
-npm run lint
+# One-off maintenance: drop duplicate review rows
+npm run dedupe:reviews
 
-# Type checking
-npm run type-check
+# Type checking (tsc is a dev dependency)
+npx tsc --noEmit
 ```
 
 ### Development Workflow
@@ -1484,12 +1611,7 @@ app.use('/api/features', featureRoutes);
 
 ### Testing with Sample Data
 
-```bash
-# Seed database (if script exists)
-npm run seed
-
-# Or use MongoDB Compass to import JSON
-```
+There is no seed script. `src/data/` holds the starter catalogue (`categories.json`, `subCategories.json`, `products.json`, `reviews.json`); import those into MongoDB Compass, or create rows through the admin dashboard.
 
 ---
 
@@ -1528,26 +1650,23 @@ Configured in `vercel.json`:
 ```json
 {
   "crons": [
-    {
-      "path": "/api/demo/restore",
-      "schedule": "0 0 * * *"
-    },
-    {
-      "path": "/api/warranties/expire",
-      "schedule": "0 1 * * *"
-    },
-    {
-      "path": "/api/vendor-subscription/expire",
-      "schedule": "0 2 * * *"
-    }
+    { "path": "/api/demo/restore", "schedule": "0 18 * * *" },
+    { "path": "/api/deliveries/expire", "schedule": "0 18 * * *" },
+    { "path": "/api/vendor-subscription/expire", "schedule": "15 19 * * *" },
+    { "path": "/api/promotions/expire", "schedule": "30 19 * * *" },
+    { "path": "/api/products/expire", "schedule": "45 19 * * *" }
   ]
 }
 ```
 
-**Cron Schedule:**
-- Demo restore: Daily at midnight
-- Warranty expiry: Daily at 1 AM
-- Subscription expiry: Daily at 2 AM
+**Cron Schedule (UTC, as Vercel runs it):**
+- Demo restore: 18:00
+- Delivery offer sweep: 18:00
+- Subscription expiry: 19:15
+- Featured placement expiry: 19:30
+- Product offer expiry: 19:45
+
+On a long-running host the same routes run in-process through `node-cron` on `CRON_TIMEZONE` (demo 12:00 AM, deliveries every 10 minutes, subscriptions 12:45 AM, placements 1:00 AM); product offers are swept by Vercel Cron only.
 
 ### Production Checklist
 
@@ -1574,8 +1693,14 @@ Configured in `vercel.json`:
 | **Product Catalog** | ✅ Complete |
 | **Order Processing** | ✅ Complete (Transactional) |
 | **Multi-Vendor** | ✅ Complete |
+| **Delivery & Riders** | ✅ Complete (offers, tracking, codes, payouts) |
+| **Rider Onboarding** | ✅ Complete (application + review desk) |
+| **Vendor Plans & Billing** | ✅ Complete (editable price list) |
 | **Loyalty System** | ✅ Complete (Atomic) |
-| **Warranty Management** | ✅ Complete |
+| **Product Warranty Fields** | ✅ Complete (listing metadata, no claim flow) |
+| **Product Engagement** | ✅ Complete (views versus sales) |
+| **Document Uploads** | ✅ Complete (MIME + size checked) |
+| **Account Data Export** | ✅ Complete (JSON, self only) |
 | **Coupon System** | ✅ Complete |
 | **Notifications** | ✅ Complete |
 | **Email Delivery** | ✅ Complete (SMTP) |
